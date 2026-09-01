@@ -75,7 +75,7 @@ namespace Dimly
     public sealed class SettingsWindow : Form, IShell
     {
         private const int DesignWidth = 900;
-        private const int DesignHeight = 700;
+        private const int DesignHeight = 840;
         private const int SidebarWidth = 210;
         private const int CaptionHeight = 54;
         private const int PagePadding = 28;
@@ -409,9 +409,15 @@ namespace Dimly
                     detail = "Waiting for you to come back";
                     dot = T.Accent;
                 }
+                else if (engine.HeldByMedia)
+                {
+                    headline = "Media playing";
+                    detail = "Countdown starts when it stops";
+                    dot = T.AccentAlt;
+                }
                 else
                 {
-                    int remaining = Math.Max(0, _shell.Settings.IdleSeconds - engine.IdleSeconds);
+                    int remaining = Math.Max(0, _shell.Settings.IdleSeconds - engine.CountdownSeconds);
                     headline = "Watching";
                     detail = remaining > 0 ? "Dims in " + remaining + "s" : "Dimming now";
                     dot = T.Accent;
@@ -722,17 +728,17 @@ namespace Dimly
                 AppSettings settings = shell.Settings;
 
                 // --- away brightness ------------------------------------------------
-                Card away = AddCard("AWAY BRIGHTNESS", 184);
+                Card away = AddCard("AWAY BRIGHTNESS", 196);
 
                 _gauge = new BrightnessGauge();
                 _gauge.Percent = settings.AwayBrightness;
                 _gauge.Legend = "away level";
-                _gauge.SetBounds(Ui.Px(24), Ui.Px(32), Ui.Px(136), Ui.Px(136));
+                _gauge.SetBounds(Ui.Px(24), Ui.Px(44), Ui.Px(136), Ui.Px(136));
                 away.Controls.Add(_gauge);
 
-                Place(away, new Caption("Dim screens to", 10.5f, FontStyle.Bold, Tone.Normal), 188, 52, 24);
+                Place(away, new Caption("Dim screens to", 10.5f, FontStyle.Bold, Tone.Normal), 188, 60, 24);
                 Place(away, new Caption("A display already dimmer than this is left alone.",
-                    8.5f, FontStyle.Regular, Tone.Muted), 188, 74, 24);
+                    8.5f, FontStyle.Regular, Tone.Muted), 188, 82, 24);
 
                 _level = new Slider();
                 _level.Minimum = 0;
@@ -744,10 +750,10 @@ namespace Dimly
                     Shell.Settings.AwayBrightness = _level.Value;
                     Shell.Persist();
                 };
-                Place(away, _level, 188, 104, 24);
+                Place(away, _level, 188, 112, 24);
 
                 _override = new PillButton();
-                _override.SetBounds(Ui.Px(188), Ui.Px(140), Ui.Px(168), Ui.Px(34));
+                _override.SetBounds(Ui.Px(188), Ui.Px(148), Ui.Px(168), Ui.Px(34));
                 _override.Click += delegate
                 {
                     Shell.Engine.Overridden = !Shell.Engine.Overridden;
@@ -756,7 +762,7 @@ namespace Dimly
                 ShowOverrideState();
 
                 Place(away, new Caption("Dims straight away and stays there.",
-                    8.25f, FontStyle.Regular, Tone.Faint), 364, 149, 24);
+                    8.25f, FontStyle.Regular, Tone.Faint), 364, 157, 24);
 
                 // --- timing ---------------------------------------------------------
                 Card timing = AddCard("WHEN TO DIM", 200);
@@ -789,7 +795,7 @@ namespace Dimly
                 SyncDelayControls(settings.IdleSeconds);
 
                 // --- rules ----------------------------------------------------------
-                Card rules = AddCard("RULES", 212);
+                Card rules = AddCard("RULES", 316);
 
                 Segmented fade = new Segmented();
                 fade.Items = new string[] { "Off", "Fast", "Smooth", "Slow" };
@@ -822,6 +828,26 @@ namespace Dimly
                 };
                 Row(rules, "Never dim over a fullscreen app",
                     "Films and games count as being at the desk.", fullscreen, 148);
+
+                ToggleSwitch audio = new ToggleSwitch();
+                audio.SetCheckedSilently(settings.HoldWhileAudioPlays);
+                audio.CheckedChanged += delegate
+                {
+                    Shell.Settings.HoldWhileAudioPlays = audio.Checked;
+                    Shell.Persist();
+                };
+                Row(rules, "Never dim while media is playing",
+                    "Sound means someone is still listening, music included.", audio, 200);
+
+                ToggleSwitch devices = new ToggleSwitch();
+                devices.SetCheckedSilently(settings.IgnoreNoisyDevices);
+                devices.CheckedChanged += delegate
+                {
+                    Shell.Settings.IgnoreNoisyDevices = devices.Checked;
+                    Shell.Persist();
+                };
+                Row(rules, "Ignore devices that keep the PC awake",
+                    "A gamepad with drifting sticks can hold Windows awake by itself.", devices, 252);
             }
 
             public override string Title { get { return "Away & dimming"; } }

@@ -1,7 +1,7 @@
-// Tests the real DimEngine state machine against stand-ins for Win32 idle time and for the
-// displays. Compiled by tools/enginetest.ps1 with src/DimEngine.cs, src/AppSettings.cs and
-// src/Theme.cs; src/Native.cs and src/Displays.cs are replaced by the doubles below, so the
-// engine under test is the shipping code, unmodified.
+// Tests the real DimEngine state machine against stand-ins for Win32 idle time, the displays
+// and the audio engine. Compiled by tools/test.ps1 alongside src/DimEngine.cs and friends;
+// src/Native.cs, src/Displays.cs and src/MediaWatcher.cs are replaced by the doubles below, so
+// the engine under test is the shipping code, unmodified.
 
 using System;
 using System.Collections.Generic;
@@ -18,6 +18,27 @@ namespace Dimly
 
         public static int IdleMilliseconds() { return Idle; }
         public static bool IsFullscreenAppActive() { return Fullscreen; }
+    }
+
+    /// <summary>Stands in for the audio engine, so playback can be turned on and off at will.</summary>
+    public sealed class MediaWatcher
+    {
+        public bool Enabled { get; set; }
+        public bool IsPlaying { get; set; }
+    }
+
+    /// <summary>Stands in for the hook-based idle clock, so a machine whose system clock is
+    /// pinned at zero by a self-reporting device can be simulated.</summary>
+    public sealed class ActivityWatcher
+    {
+        public ActivityWatcher() { Available = true; }
+
+        public bool Enabled { get; set; }
+        public bool Available { get; set; }
+        public int IdleMilliseconds { get; set; }
+        public int Polls;
+
+        public void PollGamepads() { Polls++; }
     }
 
     public enum BrightnessKind { Backlight, Ddc, Overlay }
@@ -72,7 +93,9 @@ namespace Dimly
             displays.Add(bright);
             displays.Add(dim);
 
-            DimEngine engine = new DimEngine(settings, displays);
+            MediaWatcher media = new MediaWatcher();
+            ActivityWatcher activity = new ActivityWatcher();
+            DimEngine engine = new DimEngine(settings, displays, media, activity);
             engine.Start();
 
             Native.Idle = 0;
@@ -119,6 +142,65 @@ namespace Dimly
             engine.SetLocked(false);
             Pump(900);
             Check("restores when unlocked", engine.State == DimState.Awake && bright.Hardware == 100);
+
+            // A device reporting on its own - a drifting gamepad - pins the system idle clock
+            // at zero. Without help, nothing can ever dim; that is the bug this guards against.
+            Native.Idle = 0;
+            activity.IdleMilliseconds = 20000;
+            Pump(1800);
+            Check("system clock alone never dims on such a machine", engine.State == DimState.Awake);
+
+            settings.IgnoreNoisyDevices = true;
+            Pump(2600);
+            Check("counting real input instead lets it dim", engine.State == DimState.Dimmed && bright.Hardware == 25);
+            Check("gamepads are polled every tick", activity.Polls > 0);
+            Check("the watcher is switched on with the setting", activity.Enabled);
+
+            activity.IdleMilliseconds = 0;
+            Pump(1800);
+            Check("real input still restores", engine.State == DimState.Awake && bright.Hardware == 100);
+
+            // With no hooks there is nothing to trust, so the system clock has to be believed.
+            activity.Available = false;
+            activity.IdleMilliseconds = 20000;
+            Pump(2600);
+            Check("falls back to the system clock when hooks are unavailable", engine.State == DimState.Awake);
+            activity.Available = true;
+            settings.IgnoreNoisyDevices = false;
+            activity.IdleMilliseconds = 0;
+            Pump(1600);
+
+            // Media playing holds the countdown at the start line
+            settings.HoldWhileAudioPlays = true;
+            Native.Idle = 0;
+            Pump(1600);
+            media.IsPlaying = true;
+            Native.Idle = 9000;
+            Pump(2600);
+            Check("media playing blocks the dim", engine.State == DimState.Awake && bright.Hardware == 100);
+            Check("status reports the hold", engine.HeldByMedia);
+            Check("countdown is pinned at zero", engine.CountdownSeconds == 0);
+
+            // ... and the countdown restarts from the moment it stops, rather than dimming at once
+            media.IsPlaying = false;
+            Pump(1600);
+            Check("no instant dim when playback stops", engine.State == DimState.Awake);
+            Check("hold released", !engine.HeldByMedia);
+            Pump(2600);
+            Check("dims once the delay passes without sound", engine.State == DimState.Dimmed && bright.Hardware == 25);
+
+            // Turning the toggle off makes sound irrelevant again
+            Native.Idle = 0;
+            Pump(1600);
+            settings.HoldWhileAudioPlays = false;
+            media.IsPlaying = true;
+            Native.Idle = 9000;
+            Pump(2600);
+            Check("toggle off ignores playback", engine.State == DimState.Dimmed && bright.Hardware == 25);
+            Check("watcher switched off with the toggle", !media.Enabled);
+            media.IsPlaying = false;
+            Native.Idle = 0;
+            Pump(1600);
 
             // Manual override: dims on demand and ignores the mouse until switched off
             Native.Idle = 0;

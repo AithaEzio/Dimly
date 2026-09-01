@@ -94,7 +94,7 @@ if (($rect.R - $rect.L) -lt 600) { throw "No Dimly window appeared (handle=$hand
 [Shot]::Nudge()
 Start-Sleep -Milliseconds 500
 [Shot]::GetWindowRect($handle, [ref]$rect) | Out-Null
-$scale = ($rect.B - $rect.T) / 700.0
+$scale = ($rect.B - $rect.T) / 840.0
 Write-Host "Window $($rect.R - $rect.L) x $($rect.B - $rect.T) at $($rect.L),$($rect.T)  scale $([Math]::Round($scale,2))"
 
 function Capture([string]$name) {

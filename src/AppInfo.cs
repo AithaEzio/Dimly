@@ -11,8 +11,29 @@ namespace Dimly
     public static class AppInfo
     {
         public const string Name = "Dimly";
-        public const string Version = "1.0";
         public const string Tagline = "Dims your screens while you are away.";
+
+        private static string _version;
+
+        /// <summary>
+        /// Read from the assembly rather than written twice: what the window shows and what
+        /// Explorer shows for the file are then guaranteed to agree. See src/AssemblyInfo.cs.
+        /// </summary>
+        public static string Version
+        {
+            get
+            {
+                if (_version == null)
+                {
+                    Assembly assembly = Assembly.GetExecutingAssembly();
+                    object[] tags = assembly.GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute), false);
+                    _version = tags.Length > 0
+                        ? ((AssemblyInformationalVersionAttribute)tags[0]).InformationalVersion
+                        : assembly.GetName().Version.ToString(2);
+                }
+                return _version;
+            }
+        }
 
         private const string IconResource = "Dimly.dimly.ico";
 

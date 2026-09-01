@@ -173,12 +173,48 @@ namespace Dimly
         [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "GetClassNameW")]
         private static extern int GetClassName(IntPtr hWnd, StringBuilder buffer, int capacity);
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT
+        {
+            public int X, Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct WINDOWPLACEMENT
+        {
+            public int length;
+            public int flags;
+            public int showCmd;
+            public POINT minPosition;
+            public POINT maxPosition;
+            public RECT normalPosition;
+        }
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT placement);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+        private static extern int GetWindowLong(IntPtr hWnd, int index);
+
         private const uint MONITOR_DEFAULTTONEAREST = 2;
+        private const int GWL_STYLE = -16;
+        private const int SW_SHOWMAXIMIZED = 3;
+        private const int WS_CAPTION = 0x00C00000;
+        private const int WS_THICKFRAME = 0x00040000;
 
         /// <summary>
-        /// True when the focused window covers its whole monitor - a video, slideshow or game
-        /// that the user is watching rather than ignoring.
+        /// True when the focused window is genuinely filling its monitor - a video, slideshow
+        /// or game the user is watching rather than ignoring.
         /// </summary>
+        /// <remarks>
+        /// Covering the monitor is not enough on its own. A merely maximised window overhangs
+        /// the screen by the invisible resize border, and when the taskbar is set to auto-hide
+        /// the work area is the whole monitor, so an ordinary maximised browser matches the
+        /// naive test exactly. Telling the two apart is what the placement and style checks are
+        /// for: real fullscreen drops the title bar and the resize frame, a maximised window
+        /// keeps both.
+        /// </remarks>
         public static bool IsFullscreenAppActive()
         {
             IntPtr window = GetForegroundWindow();
@@ -190,15 +226,25 @@ namespace Dimly
             string name = className.ToString();
             if (name == "Progman" || name == "WorkerW" || name == "Shell_TrayWnd") return false;
 
-            RECT window_rect;
-            if (!GetWindowRect(window, out window_rect)) return false;
+            RECT bounds;
+            if (!GetWindowRect(window, out bounds)) return false;
 
             MONITORINFOEX info = MONITORINFOEX.Create();
             if (!GetMonitorInfo(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), ref info)) return false;
 
             RECT screen = info.rcMonitor;
-            return window_rect.Left <= screen.Left && window_rect.Top <= screen.Top
-                && window_rect.Right >= screen.Right && window_rect.Bottom >= screen.Bottom;
+            bool coversMonitor = bounds.Left <= screen.Left && bounds.Top <= screen.Top
+                              && bounds.Right >= screen.Right && bounds.Bottom >= screen.Bottom;
+            if (!coversMonitor) return false;
+
+            WINDOWPLACEMENT placement = new WINDOWPLACEMENT();
+            placement.length = Marshal.SizeOf(typeof(WINDOWPLACEMENT));
+            if (!GetWindowPlacement(window, ref placement)) return true;
+            if (placement.showCmd != SW_SHOWMAXIMIZED) return true;
+
+            int style = GetWindowLong(window, GWL_STYLE);
+            bool wearsWindowFurniture = (style & WS_CAPTION) == WS_CAPTION || (style & WS_THICKFRAME) != 0;
+            return !wearsWindowFurniture;
         }
 
         // ------------------------------------------------------------- windows

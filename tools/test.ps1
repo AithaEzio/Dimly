@@ -24,10 +24,22 @@ $engine = Build 'enginetest' @('src\DimEngine.cs', 'src\AppSettings.cs', 'src\Th
 $engineOk = $LASTEXITCODE -eq 0
 
 Write-Host ''
+Write-Host '== activity watcher (Raw Input) ==' -ForegroundColor Cyan
+$activity = Build 'activityprobe' @('src\ActivityWatcher.cs', 'tools\activityprobe.cs')
+& $activity
+$activityOk = $LASTEXITCODE -eq 0
+
+Write-Host ''
+Write-Host '== fullscreen detection ==' -ForegroundColor Cyan
+$fullscreen = Build 'fullscreentest' @('src\Native.cs', 'tools\fullscreentest.cs')
+& $fullscreen
+$fullscreenOk = $LASTEXITCODE -eq 0
+
+Write-Host ''
 Write-Host '== display enumeration on this machine ==' -ForegroundColor Cyan
 $probe = Build 'probe' @('src\Native.cs', 'src\Displays.cs', 'tools\probe.cs')
 & $probe
 
 Write-Host ''
-if ($engineOk) { Write-Host 'Engine checks passed.' -ForegroundColor Green }
-else { Write-Host 'Engine checks FAILED.' -ForegroundColor Red; exit 1 }
+if ($engineOk -and $fullscreenOk -and $activityOk) { Write-Host 'All checks passed.' -ForegroundColor Green }
+else { Write-Host 'CHECKS FAILED.' -ForegroundColor Red; exit 1 }

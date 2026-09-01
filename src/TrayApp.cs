@@ -15,6 +15,8 @@ namespace Dimly
         private readonly AppSettings _settings;
         private readonly MessageWindow _messages;
         private readonly DisplayManager _displays;
+        private readonly MediaWatcher _media;
+        private readonly ActivityWatcher _activity;
         private readonly DimEngine _engine;
         private readonly NotifyIcon _tray;
         private readonly ToolStripMenuItem _pauseItem;
@@ -30,7 +32,9 @@ namespace Dimly
 
             _messages = new MessageWindow(this);
             _displays = new DisplayManager(_messages);
-            _engine = new DimEngine(settings, _displays);
+            _media = new MediaWatcher();
+            _activity = new ActivityWatcher();
+            _engine = new DimEngine(settings, _displays, _media, _activity);
 
             _statusItem = new ToolStripMenuItem(AppInfo.Name);
             _statusItem.Enabled = false;
@@ -94,6 +98,7 @@ namespace Dimly
             if (_engine.Paused) state = "paused";
             else if (_engine.Overridden) state = "dimmed by hand";
             else if (_engine.State == DimState.Dimmed) state = "dimmed";
+            else if (_engine.HeldByMedia) state = "holding off, media is playing";
             else state = "watching, dims after " + DelayScale.Humanize(_settings.IdleSeconds);
 
             _tray.Text = Truncate(AppInfo.Name + " - " + state, 63);
@@ -169,6 +174,8 @@ namespace Dimly
 
                 if (_window != null) _window.Dispose();
                 _engine.Dispose();
+                _media.Dispose();
+                _activity.Dispose();
                 _displays.Dispose();
                 _tray.Dispose();
                 _messages.Dispose();

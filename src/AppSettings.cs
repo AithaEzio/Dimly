@@ -22,6 +22,13 @@ namespace Dimly
         public int FadeMillis { get; set; }
         public bool DimOnLock { get; set; }
         public bool SkipFullscreen { get; set; }
+
+        /// <summary>Hold the countdown while the machine is making sound.</summary>
+        public bool HoldWhileAudioPlays { get; set; }
+
+        /// <summary>Count real keyboard, mouse and gamepad use instead of trusting the system
+        /// idle clock, which any self-reporting HID device can pin at zero.</summary>
+        public bool IgnoreNoisyDevices { get; set; }
         public bool StartHidden { get; set; }
         public string ThemeId { get; set; }
 
@@ -37,6 +44,8 @@ namespace Dimly
             FadeMillis = 700;
             DimOnLock = true;
             SkipFullscreen = true;
+            HoldWhileAudioPlays = true;
+            IgnoreNoisyDevices = false;
             StartHidden = false;
             ThemeId = "midnight";
             DisabledDisplays = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -110,6 +119,8 @@ namespace Dimly
                 case "FadeMillis": FadeMillis = ParseInt(value, FadeMillis); break;
                 case "DimOnLock": DimOnLock = ParseBool(value, DimOnLock); break;
                 case "SkipFullscreen": SkipFullscreen = ParseBool(value, SkipFullscreen); break;
+                case "HoldWhileAudioPlays": HoldWhileAudioPlays = ParseBool(value, HoldWhileAudioPlays); break;
+                case "IgnoreNoisyDevices": IgnoreNoisyDevices = ParseBool(value, IgnoreNoisyDevices); break;
                 case "StartHidden": StartHidden = ParseBool(value, StartHidden); break;
                 case "Theme": ThemeId = value; break;
                 case "DisabledDisplays":
@@ -142,6 +153,8 @@ namespace Dimly
                 Write(text, "FadeMillis", FadeMillis);
                 Write(text, "DimOnLock", DimOnLock);
                 Write(text, "SkipFullscreen", SkipFullscreen);
+                Write(text, "HoldWhileAudioPlays", HoldWhileAudioPlays);
+                Write(text, "IgnoreNoisyDevices", IgnoreNoisyDevices);
                 Write(text, "StartHidden", StartHidden);
                 text.AppendLine("Theme=" + ThemeId);
 

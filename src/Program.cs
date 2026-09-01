@@ -46,7 +46,7 @@ namespace Dimly
             Application.ThreadException += OnThreadException;
             AppDomain.CurrentDomain.UnhandledException += OnDomainException;
 
-            Ui.Initialize(DesktopScale(), 740, Screen.PrimaryScreen.WorkingArea.Height);
+            Ui.Initialize(DesktopScale(), 880, Screen.PrimaryScreen.WorkingArea.Height);
 
             AppSettings settings = AppSettings.Load();
             Theme.Current = Theme.Find(settings.ThemeId);

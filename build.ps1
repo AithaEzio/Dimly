@@ -44,7 +44,12 @@ $arguments = @(
 if ($LASTEXITCODE -ne 0) { throw "Build failed with exit code $LASTEXITCODE" }
 
 $size = (Get-Item $output).Length
+$hash = (Get-FileHash -Path $output -Algorithm SHA256).Hash.ToLower()
 Write-Host ("Built {0}  ({1:N0} bytes)" -f $output, $size) -ForegroundColor Green
+
+# Publish this alongside a release: it is how somebody can prove the download matches a build
+# they made themselves, which matters more for an unsigned executable than for a signed one.
+Write-Host ("SHA-256  {0}" -f $hash)
 
 if ($Run) {
     Get-Process -Name Dimly -ErrorAction SilentlyContinue | Stop-Process -Force

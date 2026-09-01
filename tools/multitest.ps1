@@ -181,7 +181,7 @@ try {
 
     Check 'no overlays before dimming' (([Multi]::Overlays([uint32]$app.Id)).Count -eq 0)
 
-    [Multi]::ClickAt($handle, ($rect.L + 510), ($rect.T + 211))    # Dim now
+    [Multi]::ClickAt($handle, ($rect.L + 510), ($rect.T + 219))    # Dim now
     Start-Sleep -Milliseconds 2500
 
     $dimmed = [Multi]::ReadAll()
@@ -198,7 +198,7 @@ try {
             ($overlays | Where-Object { $_ -match 'click-through=True\s+always-on-top=True' }).Count -eq $overlays.Count)
     }
 
-    [Multi]::ClickAt($handle, ($rect.L + 510), ($rect.T + 211))    # Restore brightness
+    [Multi]::ClickAt($handle, ($rect.L + 510), ($rect.T + 219))    # Restore brightness
     Start-Sleep -Milliseconds 2500
 
     $back = [Multi]::ReadAll()

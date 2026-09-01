@@ -741,23 +741,31 @@ namespace Dimly
                 }
             }
 
+            // The reading is placed by hand because the number is large and the unit small.
+            // Drawing them as one string is not an option, and butting them together on advance
+            // width alone collides for a narrow glyph: "1" leaves no room before the "%".
             string value = _percent.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            Font big = Ui.Font(30f, FontStyle.Regular);
-            Size measured = TextRenderer.MeasureText(g, value, big, Size.Empty, TextFormatFlags.NoPadding);
-            Size unit = TextRenderer.MeasureText(g, "%", Ui.Font(13f, FontStyle.Regular), Size.Empty, TextFormatFlags.NoPadding);
+            Font numberFont = Ui.Font(30f, FontStyle.Regular);
+            Font unitFont = Ui.Font(13f, FontStyle.Regular);
 
-            int totalWidth = measured.Width + unit.Width;
-            int left = (Width - totalWidth) / 2;
-            int baseline = (Height - measured.Height) / 2 - Ui.Px(6);
+            Size number = TextRenderer.MeasureText(g, value, numberFont, Size.Empty, TextFormatFlags.NoPadding);
+            Size unit = TextRenderer.MeasureText(g, "%", unitFont, Size.Empty, TextFormatFlags.NoPadding);
 
-            TextRenderer.DrawText(g, value, big, new Point(left, baseline), T.Text, TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(g, "%", Ui.Font(13f, FontStyle.Regular),
-                new Point(left + measured.Width, baseline + measured.Height - unit.Height - Ui.Px(6)),
+            int gap = Ui.Px(4);
+            int left = (Width - (number.Width + gap + unit.Width)) / 2;
+            int top = (Height - number.Height) / 2 - Ui.Px(8);
+
+            TextRenderer.DrawText(g, value, numberFont, new Point(left, top), T.Text, TextFormatFlags.NoPadding);
+
+            // The unit sits on the number's baseline, lifted a little so it reads as a unit
+            // rather than as a second, smaller number.
+            TextRenderer.DrawText(g, "%", unitFont,
+                new Point(left + number.Width + gap, top + number.Height - unit.Height - Ui.Px(4)),
                 T.TextMuted, TextFormatFlags.NoPadding);
 
             if (string.IsNullOrEmpty(Legend)) return;
             TextRenderer.DrawText(g, Legend, Ui.Font(8.25f, FontStyle.Regular),
-                new Rectangle(0, baseline + measured.Height - Ui.Px(2), Width, Ui.Px(20)), T.TextMuted,
+                new Rectangle(0, top + number.Height + Ui.Px(2), Width, Ui.Px(20)), T.TextMuted,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPrefix);
         }
     }

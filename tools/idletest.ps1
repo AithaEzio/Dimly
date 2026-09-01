@@ -27,6 +27,16 @@ public static class Idle {
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint f);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, IntPtr extra);
 
+    [StructLayout(LayoutKind.Sequential)] public struct LASTINPUT { public uint cb, tick; }
+    [DllImport("user32.dll")] public static extern bool GetLastInputInfo(ref LASTINPUT info);
+
+    /// Milliseconds since the last real input - the very thing this test needs to be climbing.
+    public static long IdleMs() {
+        LASTINPUT info = new LASTINPUT(); info.cb = 8;
+        if (!GetLastInputInfo(ref info)) return -1;
+        return (long)(uint)((uint)Environment.TickCount - info.tick);
+    }
+
     [DllImport("dxva2.dll")] public static extern bool GetNumberOfPhysicalMonitorsFromHMONITOR(IntPtr m, ref uint n);
     [DllImport("dxva2.dll")] public static extern bool GetPhysicalMonitorsFromHMONITOR(IntPtr m, uint n, [Out] PHYSICAL_MONITOR[] a);
     [DllImport("dxva2.dll")] public static extern bool GetMonitorBrightness(IntPtr h, ref uint lo, ref uint cur, ref uint hi);
@@ -96,6 +106,7 @@ Set-Content -Path $settings -Value @(
     'Fade=0'
     'DimOnLock=1'
     'SkipFullscreen=0'
+    'HoldWhileAudioPlays=0'   # this test is about idle time; sound must not enter into it
     'StartHidden=0'
     'Theme=midnight'
     'DisabledDisplays='
@@ -123,7 +134,7 @@ try {
     [Idle]::SetWindowPos($handle, [IntPtr]::new(-1), 40, 40, 0, 0, 0x0001 -bor 0x0010) | Out-Null
     Start-Sleep -Milliseconds 500
     [Idle]::GetWindowRect($handle, [ref]$rect) | Out-Null
-    $scale = ($rect.B - $rect.T) / 700.0
+    $scale = ($rect.B - $rect.T) / 840.0
 
     # 1. Settings were loaded: click the "10s" preset and check it lands on disk.
     $x = $rect.L + [int]((210 + 28 + 20 + 3 + 99 + 49) * $scale)
@@ -143,10 +154,23 @@ try {
     # 2. Now go quiet. No input of any kind until the nudge below.
     Write-Host 'Idling (no input) - expecting an automatic dim...'
     $samples = @()
-    for ($i = 0; $i -lt 20; $i++) { Start-Sleep -Milliseconds 700; $samples += [Idle]::Read() }
-    Write-Host ("Readings while idle: " + ($samples -join ', '))
+    $peakIdle = 0
+    for ($i = 0; $i -lt 20; $i++) {
+        Start-Sleep -Milliseconds 700
+        $samples += [Idle]::Read()
+        $now = [Idle]::IdleMs()
+        if ($now -gt $peakIdle) { $peakIdle = $now }
+    }
+    Write-Host ("Readings while idle: " + ($samples -join ', ') + "   (peak idle ${peakIdle}ms)")
     $low = ($samples | Measure-Object -Minimum).Minimum
-    $results['autoDim'] = ($low -le 45)
+
+    # Only a real idle stretch can prove anything here. Machines with something injecting input
+    # never go idle at all, and calling that a pass would be a lie.
+    if ($peakIdle -lt 8000) {
+        $results['autoDim'] = 'SKIP'
+        Write-Host 'The machine never idled past 8s, so the automatic dim could not be tested.'
+    }
+    else { $results['autoDim'] = ($low -le 45) }
 
     # 3. Come back.
     Write-Host 'Sending real input...'
@@ -162,7 +186,8 @@ try {
 
     Write-Host ''
     foreach ($k in 'save', 'autoDim', 'restore', 'afterExit') {
-        $mark = if ($results[$k]) { 'PASS' } else { 'FAIL' }
+        $mark = if ($results[$k] -eq 'SKIP') { 'SKIP (machine never idle)' }
+                elseif ($results[$k]) { 'PASS' } else { 'FAIL' }
         Write-Host ("  {0,-10} {1}" -f $k, $mark)
     }
 }

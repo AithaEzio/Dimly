@@ -101,11 +101,11 @@ try {
     [Ddc]::SetWindowPos($handle, [IntPtr]::new(-1), 40, 40, 0, 0, 0x0001 -bor 0x0010) | Out-Null
     Start-Sleep -Milliseconds 600
     [Ddc]::GetWindowRect($handle, [ref]$rect) | Out-Null
-    $scale = ($rect.B - $rect.T) / 700.0
+    $scale = ($rect.B - $rect.T) / 840.0
 
     # The Dim now / Restore brightness button, in design coordinates inside the window.
     $px = $rect.L + [int]((210 + 28 + 188 + 84) * $scale)
-    $py = $rect.T + [int]((54 + 140 + 17) * $scale)
+    $py = $rect.T + [int]((54 + 148 + 17) * $scale)
 
     Write-Host 'Clicking Dim now...'
     [Ddc]::ClickAt($handle, $px, $py)

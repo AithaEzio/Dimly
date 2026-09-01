@@ -26,8 +26,14 @@ namespace Dimly
     {
         private const int TickMilliseconds = 1000;
 
+        /// <summary>Ticks of silence to remember. One tick over the longest possible delay is
+        /// enough for the countdown; capping it keeps the millisecond conversion in range.</summary>
+        private const int MaxQuietTicks = AppSettings.MaxIdleSeconds + 1;
+
         private readonly AppSettings _settings;
         private readonly DisplayManager _displays;
+        private readonly MediaWatcher _media;
+        private readonly ActivityWatcher _activity;
         private readonly Timer _tick;
 
         private readonly object _queueGate = new object();
@@ -42,10 +48,16 @@ namespace Dimly
         /// until the user says otherwise. Unlike an away dim, moving the mouse does not undo it.</summary>
         private bool _overridden;
 
-        public DimEngine(AppSettings settings, DisplayManager displays)
+        /// <summary>Ticks since sound was last heard. Zero means playback is holding the
+        /// countdown at the start line; it begins counting the moment playback stops.</summary>
+        private int _quietTicks = MaxQuietTicks;
+
+        public DimEngine(AppSettings settings, DisplayManager displays, MediaWatcher media, ActivityWatcher activity)
         {
             _settings = settings;
             _displays = displays;
+            _media = media;
+            _activity = activity;
             _tick = new Timer();
             _tick.Interval = TickMilliseconds;
             _tick.Tick += OnTick;
@@ -72,8 +84,30 @@ namespace Dimly
             }
         }
 
-        /// <summary>Seconds since the last input - what the countdown to dimming is measured against.</summary>
-        public int IdleSeconds { get { return Native.IdleMilliseconds() / 1000; } }
+        /// <summary>
+        /// Seconds counted towards dimming. It is the smaller of "time since the last input"
+        /// and "time since sound stopped", so either one being recent keeps it at zero.
+        /// </summary>
+        public int CountdownSeconds
+        {
+            get { return Math.Min(IdleMilliseconds() / 1000, _quietTicks); }
+        }
+
+        /// <summary>
+        /// How long the machine has been left alone. Normally that is the system idle clock,
+        /// but a device reporting on its own - a drifting gamepad is the usual culprit - pins
+        /// that at zero for good. When asked to, take whichever clock has seen quiet for longer:
+        /// the watcher only counts input a person actually produced.
+        /// </summary>
+        private int IdleMilliseconds()
+        {
+            int system = Native.IdleMilliseconds();
+            if (!_settings.IgnoreNoisyDevices || !_activity.Available) return system;
+            return Math.Max(system, _activity.IdleMilliseconds);
+        }
+
+        /// <summary>True when sound, rather than the user, is what is holding the countdown.</summary>
+        public bool HeldByMedia { get { return _quietTicks == 0; } }
 
         public bool Paused
         {
@@ -96,7 +130,24 @@ namespace Dimly
 
         private void OnTick(object sender, EventArgs e)
         {
+            UpdateQuiet();
             Evaluate();
+        }
+
+        /// <summary>
+        /// Tracks how long the machine has been silent. The counter only moves on the timer
+        /// tick, never on the event-driven calls into Evaluate, so one tick really is one
+        /// second. Sampling is switched off entirely whenever its answer could not matter.
+        /// </summary>
+        private void UpdateQuiet()
+        {
+            _activity.Enabled = _settings.IgnoreNoisyDevices;
+            _activity.PollGamepads();
+
+            _media.Enabled = _settings.HoldWhileAudioPlays && !_paused && !_overridden;
+
+            if (_media.Enabled && _media.IsPlaying) _quietTicks = 0;
+            else if (_quietTicks < MaxQuietTicks) _quietTicks++;
         }
 
         private void Evaluate()
@@ -114,16 +165,18 @@ namespace Dimly
                 return;
             }
 
-            int idle = Native.IdleMilliseconds();
+            // The countdown starts from whichever happened later, the last input or the last
+            // sound: pausing a film gives back the full delay rather than dimming on the spot.
+            int elapsed = Math.Min(IdleMilliseconds(), _quietTicks * TickMilliseconds);
             int threshold = _settings.IdleSeconds * 1000;
 
             if (_state == DimState.Awake)
             {
-                if (idle < threshold) return;
+                if (elapsed < threshold) return;
                 if (_settings.SkipFullscreen && Native.IsFullscreenAppActive()) return;
                 SetState(DimState.Dimmed);
             }
-            else if (idle < threshold)
+            else if (elapsed < threshold)
             {
                 SetState(DimState.Awake);
             }
