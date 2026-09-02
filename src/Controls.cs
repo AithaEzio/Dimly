@@ -136,6 +136,9 @@ namespace Dimly
 
         public bool Wrap { get; set; }
 
+        /// <summary>Aligns to the right edge, for a value that belongs opposite its label.</summary>
+        public bool AlignRight { get; set; }
+
         private Color Colour
         {
             get
@@ -152,7 +155,8 @@ namespace Dimly
         protected override void OnPaint(PaintEventArgs e)
         {
             TextFormatFlags flags = TextFormatFlags.NoPrefix
-                | (Wrap ? TextFormatFlags.WordBreak : TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+                | (Wrap ? TextFormatFlags.WordBreak : TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter)
+                | (AlignRight ? TextFormatFlags.Right : TextFormatFlags.Left);
 
             TextRenderer.DrawText(e.Graphics, Text, Ui.Font(FontSize, Style), ClientRectangle, Colour, flags);
         }
@@ -278,6 +282,15 @@ namespace Dimly
             Cursor = Cursors.Hand;
         }
 
+        /// <summary>A disabled slider must not look like a slider sitting at zero.</summary>
+        protected override void OnEnabledChanged(EventArgs e)
+        {
+            base.OnEnabledChanged(e);
+            Cursor = Enabled ? Cursors.Hand : Cursors.Default;
+            if (!Enabled) { _hover = false; _dragging = false; }
+            Invalidate();
+        }
+
         /// <summary>Fires continuously while dragging - use it for live feedback.</summary>
         public event EventHandler ValueChanged;
 
@@ -400,6 +413,9 @@ namespace Dimly
             RectangleF rail = new RectangleF(edge, centreY - thickness / 2f, Width - edge * 2f, thickness);
 
             Ui.FillRound(g, T.Track, rail, thickness / 2f);
+
+            // Nothing to point at: the value is not known, so no knob claims to be the value.
+            if (!Enabled) return;
 
             float filled = rail.Width * Fraction;
             if (filled > 0.5f)
@@ -602,6 +618,17 @@ namespace Dimly
             float radius = bounds.Height / 2f;
 
             Color face, ink;
+            if (!Enabled)
+            {
+                face = T.Track;
+                ink = T.TextFaint;
+                Ui.FillRound(g, face, bounds, radius);
+                Ui.DrawRound(g, T.Border, 1f * Ui.Scale, bounds, radius);
+                TextRenderer.DrawText(g, Text, Ui.Font(9f, FontStyle.Bold), ClientRectangle, ink,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                return;
+            }
+
             if (Primary)
             {
                 face = _pressed ? T.AccentDeep : (_hover ? Ui.Mix(T.Accent, Color.White, 0.14) : T.Accent);

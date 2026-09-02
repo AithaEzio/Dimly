@@ -13,7 +13,7 @@ One file. No installer, no runtime download, no background service.
 ![Platform](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
 ![Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4)
 ![Version](https://img.shields.io/badge/version-1.1-6E8CFF)
-![Size](https://img.shields.io/badge/size-366%20KB-brightgreen)
+![Size](https://img.shields.io/badge/size-184%20KB-brightgreen)
 ![Licence](https://img.shields.io/badge/licence-MIT-blue)
 
 <img src="assets/preview/ui-away.png" width="820" alt="Dimly's Away &amp; dimming page">
@@ -26,27 +26,66 @@ One file. No installer, no runtime download, no background service.
 
 Walking away from a bright monitor wastes power and burns backlight hours, and every "dimmer"
 utility either needs an installer, drags in a runtime, or just throws a black sheet over the
-screen. Dimly is a single 366 KB executable that turns the *actual* backlight down and puts
-your exact previous brightness back when you sit down again.
+screen. Dimly is a single 184 KB executable that turns the *actual* backlight down and brings
+it back when you sit down again.
 
 ## Features
 
-- **Dims when you leave.** After an idle delay you choose, screens fade down to your away level.
-- **Restores exactly what you had.** Not a guess, not a default — the brightness read at the
-  moment it dimmed.
+- **Dims when you leave.** After an idle delay you choose — 5 seconds to 30 minutes — screens
+  go down to your away level.
+- **Brings the brightness back when you return.** Two ways, chosen per display: **Auto
+  restore** puts the screen at a level you picked, or, with it switched off, Dimly reads the
+  brightness before dimming and puts back exactly what it found. Auto restore is on by
+  default — [read this first](#auto-restore-read-this-before-you-first-walk-away).
 - **Dim on demand.** *Dim now* drops the screens straight away and holds them there, ignoring
   the mouse, until you press *Restore brightness*. Good for reading or watching in the dark.
+- **A brightness control centre.** The Displays page shows what every attached monitor is set
+  to, live, and lets you change it from there — alongside whether Dimly dims it, how it should
+  come back, and the level it comes back to.
 - **Waits while you are watching.** With *Never dim while media is playing* on, the countdown
   does not even start until playback stops — then it begins from that moment, so pausing a film
   gives you the full delay rather than an instant dim.
+- **Waits while you are at the desk**, even on a machine whose idle clock never advances: a
+  drifting game controller pins Windows' idle timer at zero forever, and *Ignore devices that
+  keep the PC awake* counts real keyboard, mouse and gamepad use instead.
+- **Never dims over a fullscreen app**, if you want — films and games count as being present,
+  while a merely *maximised* window does not.
+- **Dims when Windows locks**, if you want, instead of waiting out the delay.
 - **Real backlight control**, not an overlay, wherever the hardware allows it — see below.
-- **Multiple monitors**, each handled through the best channel it supports, switchable
-  individually — verified dimming and restoring two monitors together.
+- **Multiple monitors**, each handled through the best channel it supports, and each with its
+  own settings — verified dimming and restoring two monitors together.
+- **Survives the screen being switched off.** When Windows' display timeout blanks a dimmed
+  screen, Dimly notices it coming back and puts the brightness right — the case where a monitor
+  otherwise wakes up stuck dim.
 - **Laptops and desktops.** Internal panels and external monitors both work.
 - **Costs almost nothing to run:** measured at **5.4 MB of memory and 0 ms of CPU across 40
   seconds idle**. With media detection on it is 11.7 MB and 16 ms per 40 s — 0.04% of one core —
-  because using the Windows audio APIs pulls the audio stack into the process.
+  because using the Windows audio APIs pulls the audio stack into the process. Closing the
+  settings window hands its memory straight back: 45 MB down to under 4 MB.
 - **Three themes**, a proper settings window, and a tray icon that stays out of the way.
+- **No installer, no runtime to fetch, no background service, nothing written outside
+  `%AppData%\Dimly`.**
+
+## Auto restore: read this before you first walk away
+
+**Auto restore is on for every display out of the box, and it changes what "restore" means.**
+
+Dimly does not read your screen's brightness before dimming it. It dims to your away level,
+and when you come back it puts the screen at the **Restore to** level *you* chose for that
+display. **That level starts at 100%**, so on a screen you keep at 75%, the first
+dim-and-return leaves you at 100% until you set it.
+
+**Set it once, per display:** open **Displays**, put the screen where you like it, and press
+**Use current brightness**. That copies the level into **Restore to**, and Dimly will return
+there from then on.
+
+**Want 1.0's behaviour instead?** Switch **Auto restore** off for that display. Dimly then
+reads the brightness before dimming and puts back exactly what it found, falling back to the
+level you chose only if the display refuses to take it.
+
+Why it works this way: reading a monitor is the fragile part. It is slow, monitors drop
+queries, and one that has been switched off answers with stale values — which is how a screen
+ends up stuck dim. Not asking is the most reliable way to dim and come back.
 
 ## Install
 
@@ -88,7 +127,7 @@ will never brighten a screen you deliberately turned down.
 <td width="50%"><img src="assets/preview/ui-appearance.png" alt="Appearance page"></td>
 </tr>
 <tr>
-<td align="center"><b>Displays</b><br>Every screen, the channel it really uses, and a switch each.</td>
+<td align="center"><b>Displays</b><br>Every screen's brightness, in one place.</td>
 <td align="center"><b>Appearance</b><br>Three themes, startup options, and where settings live.</td>
 </tr>
 </table>
@@ -114,8 +153,31 @@ will never brighten a screen you deliberately turned down.
 | Never dim while media is playing | Holds the countdown while the machine is making sound. |
 | Ignore devices that keep the PC awake | Counts real keyboard, mouse and gamepad use instead of the system idle clock. |
 
-**Displays** — switch any display in or out. Per-display choices are keyed to the monitor's
-hardware ID, so they survive reboots and reconnections.
+**Displays** — one card per monitor, and everything about that monitor in it:
+
+- **Current brightness (Realtime)** - what the monitor is set to at this moment, re-read
+  while the page is open so it follows the screen even when something else changes it. Drag it
+  and the monitor follows. Setting a level by hand counts as you being present, so any dim in
+  progress is let go of rather than fought with. A display that will not report where it is
+  says so instead of showing a made-up number.
+- **Whether Dimly dims it**, as before.
+- **Auto restore**, on by default. Dimly does not ask the display how bright it is: it dims
+  to the away level and brings it back to the level you chose. With it off, Dimly reads the
+  display first and puts back exactly the brightness it found, using the chosen level only if
+  that fails.
+- **Restore to** (**If restoring fails** when Auto restore is off), chosen per display, with
+  **Use current brightness** to copy the level above into it - making what is on screen now
+  the level to come back to.
+
+Every control carries a line saying what it does, in the same way as the other pages.
+
+A monitor that offers no brightness control Dimly can reach says so, and is dimmed with an
+overlay instead. Levels are read and written through the same queue the engine uses, so the
+window never talks to a monitor while a fade is in progress, and dragging writes at a fixed
+rate rather than on every pixel - a monitor takes tens of milliseconds per command.
+
+Per-display choices are keyed to the monitor's hardware ID, so they survive reboots and
+reconnections.
 
 **Appearance** — theme, start with Windows, start hidden in the tray.
 
@@ -220,7 +282,10 @@ to a file on your Desktop so you can read it after walking back.
 
 Dimly hands your displays back before it goes away, whatever the reason: a normal exit, Windows
 signing out or shutting down, waking from sleep, a monitor being unplugged, or an unexpected
-crash. If it ever does crash, it writes the stack trace to `%AppData%\Dimly\crash.txt` and tells
+crash. A restored brightness is watched for a few seconds afterwards, because a monitor that has
+just powered on can reload its own settings and undo it; one that refuses the restore outright
+keeps its recorded level and is offered it again until it accepts, or is put at the fallback
+level rather than left dim. If it ever does crash, it writes the stack trace to `%AppData%\Dimly\crash.txt` and tells
 you where to find it, because "it just vanished" is not a bug report anyone can act on.
 
 ## Building
@@ -232,12 +297,12 @@ that ships with it, so there is no SDK, no NuGet restore and no project file.
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-The result is `dist/Dimly.exe`, about 366 KB, with the icon and the version resource embedded. Add `-Run` to launch it
+The result is `dist/Dimly.exe`, about 184 KB, with the icon and the version resource embedded. Add `-Run` to launch it
 straight after building. The icon itself is generated from code by
 `tools/make-icon.ps1` — there are no binary art assets to trust.
 
 Targeting Framework 4.8 rather than .NET 8 is a deliberate trade: it is what makes a genuinely
-single-file, install-free 366 KB executable possible, where a modern .NET build would be either
+single-file, install-free 184 KB executable possible, where a modern .NET build would be either
 a ~150 MB self-contained file or a runtime download. The cost is C# 5 language level.
 
 ## Tests
@@ -248,16 +313,24 @@ powershell -ExecutionPolicy Bypass -File tools/test.ps1
 
 That runs the checks that need nobody at the keyboard:
 
-- **38 checks against the real `DimEngine`** — dimming, restoring, pause, lock and unlock, the
+- **66 checks against the real `DimEngine`** — dimming, restoring, pause, lock and unlock, the
   manual override, the fullscreen guard, the media hold, the stuck-idle-clock workaround,
-  per-display exclusion and shutdown — with stand-ins for the Win32 idle clock, the audio
-  engine and the hardware, so the code under test is the shipping code.
+  per-display exclusion, Auto restore both on and off, a display coming back from the screen
+  being switched off, and shutdown — with stand-ins for the Win32 idle clock, the audio engine
+  and the hardware, so the code under test is the shipping code.
 - **3 checks on fullscreen detection**, against real windows: a borderless window filling the
   monitor is fullscreen, a maximised ordinary window is not, and a small window is not.
+- **12 checks on the icon**, that the artwork really is in the executable and really is being
+  found. Dimly carries one copy of its icon, as the Win32 resource, and reads it back from
+  there; if that were ever dropped from the build nothing would crash - every icon would just
+  quietly become the generic Windows one.
 - **Display enumeration** against whatever is actually plugged into the machine.
 
-Three more scripts move real screen brightness, so they are kept separate. Each puts your
-displays back if anything goes wrong.
+Timing-dependent checks wait for the outcome rather than sleeping a fixed guess, so a slow
+machine does not turn into a red tick.
+
+The rest move real screen brightness or drive the window, so they are kept separate. Each puts
+your displays back if anything goes wrong.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/functest.ps1    # Dim now, measured over DDC/CI
@@ -265,15 +338,33 @@ powershell -ExecutionPolicy Bypass -File tools/idletest.ps1    # the automatic i
 powershell -ExecutionPolicy Bypass -File tools/mediatest.ps1   # plays a tone, checks it holds off
 powershell -ExecutionPolicy Bypass -File tools/multitest.ps1   # every display at once
 powershell -ExecutionPolicy Bypass -File tools/devicetest.ps1  # dims despite a stuck idle clock
+powershell -ExecutionPolicy Bypass -File tools/waketest.ps1    # brightness survives the display sleeping
+powershell -ExecutionPolicy Bypass -File tools/controltest.ps1 # the Displays page really moves the monitor
+powershell -ExecutionPolicy Bypass -File tools/screenofftest.ps1 # brightness survives the Windows display timeout
+powershell -ExecutionPolicy Bypass -File tools/windowtest.ps1  # the window puts itself away, and comes back
+powershell -ExecutionPolicy Bypass -File tools/soak.ps1        # many dim cycles, watching for leaks
 powershell -ExecutionPolicy Bypass -File tools/restore.ps1     # safety net: all displays to 100%
 ```
 
-Two diagnostics rather than tests: `tools/whynot.ps1` shows every input the decision is made
-from, and `tools/inputspy.cs` counts raw input events to work out what is resetting the idle
-clock - injected by software, a jittering mouse, or nothing at all (which means a HID device
-is doing it).
+`soak.ps1` is the one that matters for something meant to sit in the tray for weeks: an app
+that paints itself creates fonts, pens and brushes on every repaint and has to give all of them
+back. Over twelve dim-and-restore cycles, GDI objects stayed flat at 51, USER objects moved by
+one and handles by four.
 
-The two that wait for the machine to go idle refuse to invent a result: if something on the
+Each of these refuses to invent a result. The ones that wait for the machine to go idle report
+SKIP rather than a green tick when something is injecting input; the ones that dim a display
+refuse to run at all when it is already dim, because dimming a dim screen proves nothing.
+
+Diagnostics rather than tests: `tools/whynot.ps1` shows every input the decision is made from,
+`tools/inputspy.cs` counts raw input events to work out what is resetting the idle clock
+(injected by software, a jittering mouse, or nothing at all - which means a HID device is doing
+it), `tools/restoreprobe.cs` traces a dim and restore through a display power cycle, and
+`tools/waketrace.ps1` switches the screen off and watches what Windows tells the app and what a
+monitor handle held across the power-off will claim afterwards. That last one is how the
+stuck-dim bug was found, and it reports honestly when the screen came back on by itself instead
+of drawing a conclusion from a power-off that never happened.
+
+The ones that wait for the machine to go idle refuse to invent a result: if something on the
 machine is injecting input continuously — a jiggler, a remote session, a busy peripheral — they
 report SKIP rather than a green tick, because nothing that waits for idle can be tested there.
 
@@ -293,6 +384,7 @@ src/DimEngine.cs       the state machine: when to dim, when to come back
 src/Displays.cs        display enumeration and the three brightness channels
 src/MediaWatcher.cs    "is this machine making sound?", via the Windows audio engine
 src/ActivityWatcher.cs an idle clock that counts only input a person actually produced
+src/AppInfo.cs         the name, version and the icon read back out of the exe
 src/Native.cs          the Win32 surface
 src/AppSettings.cs     the INI in %AppData%\Dimly, and the Run key
 src/SettingsWindow.cs  the window, its sidebar and its three pages

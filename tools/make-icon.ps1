@@ -84,8 +84,9 @@ function New-Mark([int]$size) {
 }
 
 # ---- assemble the .ico ----------------------------------------------------
-# Small frames are written as 32bpp DIBs (universally understood, including by
-# System.Drawing.Icon); the 256px frame is PNG-compressed as convention requires.
+# Small frames are written as 32bpp DIBs, which every consumer understands. From 64px up they
+# are PNG-compressed: a 128px DIB alone is 66KB, more than the rest of the icon put together,
+# and Windows 10 and 11 read PNG frames at any size.
 
 function Get-DibBytes([System.Drawing.Bitmap]$bmp) {
     $w = $bmp.Width; $h = $bmp.Height
@@ -116,16 +117,13 @@ function Get-PngBytes([System.Drawing.Bitmap]$bmp) {
 }
 
 $frames = @()
-foreach ($sz in 16, 20, 24, 32, 40, 48, 64, 128) {
+foreach ($sz in 16, 20, 24, 32, 40, 48, 64, 128, 256) {
     $bmp = New-Mark $sz
-    $frames += [pscustomobject]@{ Size = $sz; Bytes = [byte[]](Get-DibBytes $bmp) }
-    if ($sz -in 16, 32, 48) { $bmp.Save((Join-Path $preview "dimly-$sz.png"), [System.Drawing.Imaging.ImageFormat]::Png) }
+    $bytes = if ($sz -ge 64) { Get-PngBytes $bmp } else { Get-DibBytes $bmp }
+    $frames += [pscustomobject]@{ Size = $sz; Bytes = [byte[]]$bytes }
+    if ($sz -eq 256) { $bmp.Save((Join-Path $preview 'dimly-256.png'), [System.Drawing.Imaging.ImageFormat]::Png) }
     $bmp.Dispose()
 }
-$big = New-Mark 256
-$frames += [pscustomobject]@{ Size = 256; Bytes = [byte[]](Get-PngBytes $big) }
-$big.Save((Join-Path $preview 'dimly-256.png'), [System.Drawing.Imaging.ImageFormat]::Png)
-$big.Dispose()
 
 $icoPath = Join-Path $assets 'dimly.ico'
 $fs = [System.IO.File]::Create($icoPath)

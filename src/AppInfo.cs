@@ -1,8 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace Dimly
@@ -35,25 +35,63 @@ namespace Dimly
             }
         }
 
-        private const string IconResource = "Dimly.dimly.ico";
+        /// <summary>
+        /// The icon the C# compiler embeds for /win32icon. Reading it from there is what lets
+        /// the executable carry one copy of the artwork instead of two: a managed copy of the
+        /// same file cost more than a third of the finished size.
+        /// </summary>
+        private const string IconResourceName = "#32512";
 
         private static readonly Dictionary<int, Icon> IconCache = new Dictionary<int, Icon>();
         private static readonly Dictionary<int, Bitmap> MarkCache = new Dictionary<int, Bitmap>();
 
         public static string ExecutablePath { get { return Application.ExecutablePath; } }
 
-        /// <summary>The application icon at the nearest available frame to <paramref name="size"/>.</summary>
+        /// <summary>
+        /// The application icon, rendered at the requested size. Windows picks the closest frame
+        /// in the icon and scales it, so asking for an exact size is better than choosing a frame
+        /// and resizing it here.
+        /// </summary>
         public static Icon Icon(int size)
         {
             Icon icon;
             if (IconCache.TryGetValue(size, out icon)) return icon;
 
-            using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(IconResource))
-                icon = stream != null ? new Icon(stream, size, size) : SystemIcons.Application;
-
+            icon = LoadFromResource(size) ?? SystemIcons.Application;
             IconCache[size] = icon;
             return icon;
         }
+
+        private static Icon LoadFromResource(int size)
+        {
+            IntPtr handle = LoadImage(GetModuleHandle(null), IconResourceName, IMAGE_ICON, size, size, LR_DEFAULTCOLOR);
+            if (handle == IntPtr.Zero) return null;
+
+            try
+            {
+                // Clone into a managed icon that owns its own copy, so the handle can go back.
+                // Fully qualified because this class has a method called Icon.
+                using (Icon borrowed = System.Drawing.Icon.FromHandle(handle))
+                    return (Icon)borrowed.Clone();
+            }
+            finally
+            {
+                DestroyIcon(handle);
+            }
+        }
+
+        private const uint IMAGE_ICON = 1;
+        private const uint LR_DEFAULTCOLOR = 0;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr LoadImage(IntPtr module, string name, uint type, int cx, int cy, uint flags);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool DestroyIcon(IntPtr icon);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr GetModuleHandle(string name);
 
         /// <summary>The icon as a bitmap, for drawing inside the window.</summary>
         public static Bitmap Mark(int size)
@@ -61,16 +99,7 @@ namespace Dimly
             Bitmap mark;
             if (MarkCache.TryGetValue(size, out mark)) return mark;
 
-            using (Bitmap source = Icon(size >= 64 ? 128 : 64).ToBitmap())
-            {
-                mark = new Bitmap(size, size);
-                using (Graphics g = Graphics.FromImage(mark))
-                {
-                    Ui.Quality(g);
-                    g.DrawImage(source, new Rectangle(0, 0, size, size));
-                }
-            }
-
+            mark = Icon(size).ToBitmap();
             MarkCache[size] = mark;
             return mark;
         }

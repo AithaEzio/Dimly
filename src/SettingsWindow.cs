@@ -128,6 +128,10 @@ namespace Dimly
             _content.SetBounds(Ui.Px(SidebarWidth) + Ui.Px(PagePadding), Ui.Px(CaptionHeight), area.Width, area.Height);
             _content.BackColor = Theme.Current.Window;
 
+            // Only ever needed by the Displays page, and only when several displays are attached:
+            // a page that is no taller than the panel shows no scrollbar at all.
+            _content.AutoScroll = true;
+
             _pages.Add(new BehaviourPage(this, area));
             _pages.Add(new DisplaysPage(this, area));
             _pages.Add(new AppearancePage(this, area));
@@ -214,10 +218,22 @@ namespace Dimly
             base.OnFormClosing(e);
         }
 
+        /// <summary>
+        /// Raised when the window has put itself away. Said plainly rather than left to
+        /// VisibleChanged, which is not raised for a hide made from inside the closing event.
+        /// </summary>
+        public event EventHandler Hidden;
+
         private void HideToTray()
         {
             Hide();
+
+            // The window stays built - it is what the tray icon opens again - but the pages it
+            // touched while on screen are handed back to Windows until it is next wanted.
             Native.TrimMemory();
+
+            EventHandler handler = Hidden;
+            if (handler != null) handler(this, EventArgs.Empty);
         }
 
         private void BeginDrag()
@@ -650,8 +666,18 @@ namespace Dimly
             protected Page(IShell shell, Size area)
             {
                 Shell = shell;
+                Area = area;
                 Size = area;
                 Location = Point.Empty;
+            }
+
+            /// <summary>The room the page was given. Content may exceed it; the panel then scrolls.</summary>
+            protected Size Area { get; private set; }
+
+            /// <summary>Grows the page to fit its cards, so anything past the bottom is reachable.</summary>
+            protected void SizeToContent()
+            {
+                Height = Math.Max(Area.Height, Ui.Px(_cursor));
             }
 
             protected IShell Shell { get; private set; }
@@ -903,86 +929,445 @@ namespace Dimly
             }
         }
 
+        /// <summary>
+        /// The brightness of every attached display in one place: what each one is set to now,
+        /// whether Dimly should dim it, and where to leave it if its own level cannot be put
+        /// back. Levels are read and written through the engine's queue, so the window never
+        /// talks to a monitor while the engine is mid-fade.
+        /// </summary>
+        /// <summary>
+        /// The brightness of every attached display in one place: what each one is set to now,
+        /// whether Dimly should dim it, and where to leave it if its own level cannot be put
+        /// back. Levels are read and written through the engine's queue, so the window never
+        /// talks to a monitor while the engine is mid-fade.
+        /// </summary>
         private sealed class DisplaysPage : Page
         {
+            /// <summary>A display Dimly can actually set, so it gets both sliders.</summary>
+            private const int ControllableCard = 320;
+
+            /// <summary>One it can only cover with an overlay: nothing to read, nothing to set.</summary>
+            private const int OverlayCard = 156;
+
+            private const int NoticeCard = 96;
+
+            /// <summary>
+            /// Dragging writes at this rate rather than on every pixel: a monitor takes tens of
+            /// milliseconds to answer a command and cannot keep up with a mouse.
+            /// </summary>
+            private const int WriteEveryMilliseconds = 140;
+
+            /// <summary>How long after the user touches a slider before a refresh may move it.</summary>
+            private const int SettleMilliseconds = 1500;
+
+            /// <summary>How long to let a rescan of the hardware finish before redrawing.</summary>
+            private const int RescanSettleMilliseconds = 900;
+
+            /// <summary>
+            /// How often the levels are read again while this page is on screen. A display can
+            /// be changed by its own buttons or by another program, and the page says realtime,
+            /// so it asks rather than waiting to be told. It only runs while the page is
+            /// showing: reading a monitor is real I/O, and the window is usually closed.
+            /// </summary>
+            private const int PollMilliseconds = 1500;
+
+            /// <summary>Room set aside on the right of the fallback line for its button.</summary>
+            private const int UseCurrentWidth = 200;
+
+            /// <summary>Width of a readout, and the gap kept clear before it so that a label
+            /// stretched across the card never runs underneath its own value.</summary>
+            private const int ReadoutWidth = 110;
+            private const int ReadoutGap = 12;
+
+            private readonly List<DisplayPanel> _panels = new List<DisplayPanel>();
+            private readonly Timer _throttle;
+            private readonly Timer _poll;
+            private readonly Timer _rescan;
+
+            private DisplayPanel _pending;
+            /// <summary>
+            /// When the sliders are free to be moved by a refresh again. Started at the clock
+            /// rather than at zero, which is not a reading from it: after 24.9 days of uptime
+            /// the tick count is negative, and "now minus zero" would then read as still
+            /// settling - freezing the levels shown here for as long as the machine stayed up.
+            /// </summary>
+            private int _settledAtTick = Environment.TickCount;
             private int _builtFor = -1;
+
+            /// <summary>A reading is already on its way, so another would only queue up behind it.</summary>
+            private bool _reading;
 
             public DisplaysPage(IShell shell, Size area) : base(shell, area)
             {
+                _throttle = new Timer();
+                _throttle.Interval = WriteEveryMilliseconds;
+                _throttle.Tick += delegate { ApplyPending(); };
+
+                _poll = new Timer();
+                _poll.Interval = PollMilliseconds;
+                _poll.Tick += delegate { RefreshLevels(); };
+
+                // Enumeration happens on the engine's worker; this waits for it to land before
+                // the list is drawn again. One timer, owned by the page, so that a rescan
+                // started just before the window closes cannot fire on a torn-down page.
+                _rescan = new Timer();
+                _rescan.Interval = RescanSettleMilliseconds;
+                _rescan.Tick += delegate
+                {
+                    _rescan.Stop();
+                    _builtFor = -1;
+                    Build();
+                };
+
                 Build();
+            }
+
+            /// <summary>Follows the levels only while somebody is looking at them.</summary>
+            protected override void OnVisibleChanged(EventArgs e)
+            {
+                base.OnVisibleChanged(e);
+                if (Visible) { RefreshLevels(); _poll.Start(); }
+                else _poll.Stop();
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _poll.Dispose();
+                    _throttle.Dispose();
+                    _rescan.Dispose();
+                }
+                base.Dispose(disposing);
             }
 
             public override string Title { get { return "Displays"; } }
 
+            /// <summary>The controls belonging to one display, kept so refreshes can find them.</summary>
+            private sealed class DisplayPanel
+            {
+                public DisplayTarget Target;
+                public Slider Brightness;
+                public Caption BrightnessValue;
+                public Caption BrightnessNote;
+                public PillButton UseCurrent;
+                public SettingRow AutoRow;
+                public ToggleSwitch Auto;
+                public Caption RestoreHeading;
+                public Slider Fallback;
+                public Caption FallbackValue;
+
+                /// <summary>Whether a read has come back at all yet.</summary>
+                public bool Answered;
+
+                /// <summary>Whether that read produced a level. A display can enumerate, accept
+                /// the query that found it, and then refuse the next one.</summary>
+                public bool Known;
+
+                /// <summary>
+                /// Says only what the display has said. A refused reading is reported as one,
+                /// never drawn as a slider resting at zero, and the explanation underneath
+                /// changes to match so the greyed-out slider is never a mystery.
+                /// </summary>
+                public void ShowBrightness()
+                {
+                    BrightnessValue.Text = Known ? Brightness.Value + " %"
+                                         : Answered ? "not reported" : "reading";
+                    BrightnessValue.Invalidate();
+
+                    BrightnessNote.Text = Known
+                        ? "What this screen is set to right now. Moving it counts as you being at the desk."
+                        : Answered
+                            ? "This display will not say what it is set to, so there is nothing to move here."
+                            : "Asking the display what it is set to...";
+                    BrightnessNote.Invalidate();
+
+                    Brightness.Enabled = Known;
+                    UseCurrent.Enabled = Known;
+                }
+
+                public void ShowFallback()
+                {
+                    FallbackValue.Text = Fallback.Value + " %";
+                    FallbackValue.Invalidate();
+                }
+
+                /// <summary>
+                /// The level below means two different things, so it is named for the one in
+                /// force: where this display always goes back to, or the last resort when the
+                /// brightness it had will not take.
+                /// </summary>
+                public void ShowRestoreMode()
+                {
+                    bool automatic = Auto.Checked;
+
+                    RestoreHeading.Text = automatic ? "Restore to" : "If restoring fails";
+                    RestoreHeading.Invalidate();
+
+                    AutoRow.Description = automatic
+                        ? "Puts this display back to the level below, without reading the screen first."
+                        : "Reads this display first, and puts back exactly the brightness it found.";
+                    AutoRow.Invalidate();
+                }
+            }
+
             private void Build()
             {
                 ResetCards();
+                _panels.Clear();
 
                 IList<DisplayTarget> targets = Shell.Displays.Targets;
                 _builtFor = targets.Count;
 
-                int rows = Math.Max(1, targets.Count);
-                Card card = AddCard("DISPLAYS", 44 + rows * 62 + 76);
-
-                int top = 44;
+                // Decide the width before making anything: if the cards will not fit, the panel
+                // grows a scrollbar, and cards drawn at the full width would slide under it.
+                int needed = NoticeCard + 16;
                 foreach (DisplayTarget target in targets)
-                {
-                    DisplayRow row = new DisplayRow(target, Shell.Settings.IsEnabled(target));
-                    row.SetBounds(Ui.Px(20), Ui.Px(top), card.Width - Ui.Px(40), Ui.Px(62));
-                    DisplayRow captured = row;
-                    row.IncludedChanged += delegate
-                    {
-                        Shell.Settings.SetEnabled(captured.Target, captured.Included);
-                        Shell.Persist();
-                    };
-                    card.Controls.Add(row);
-                    top += 62;
-                }
+                    needed += (target.Kind == BrightnessKind.Overlay ? OverlayCard : ControllableCard) + 16;
+                if (targets.Count == 0) needed += 112;
+
+                Width = Ui.Px(needed) > Area.Height
+                    ? Area.Width - SystemInformation.VerticalScrollBarWidth
+                    : Area.Width;
+
+                foreach (DisplayTarget target in targets) BuildDisplay(target);
 
                 if (targets.Count == 0)
                 {
-                    Place(card, new Caption("No displays were detected.", 9.5f, FontStyle.Regular, Tone.Muted),
-                        20, top + 18, 20);
-                    top += 62;
+                    Card empty = AddCard("DISPLAYS", 96);
+                    Place(empty, new Caption("No displays were detected.", 9.5f, FontStyle.Regular, Tone.Muted),
+                        20, 46, 20);
                 }
+
+                BuildNotice();
+                SizeToContent();
+
+                // Any reading still on its way belongs to the controls just torn down.
+                _reading = false;
+                RefreshLevels();
+            }
+
+            private void BuildDisplay(DisplayTarget target)
+            {
+                bool controllable = target.Kind != BrightnessKind.Overlay;
+                Card card = AddCard(null, controllable ? ControllableCard : OverlayCard);
+
+                DisplayRow row = new DisplayRow(target, Shell.Settings.IsEnabled(target));
+                row.SetBounds(Ui.Px(20), Ui.Px(14), card.Width - Ui.Px(40), Ui.Px(62));
+                card.Controls.Add(row);
+
+                // The switch above carries no words of its own, so this says what it just did.
+                Caption included = new Caption(string.Empty, 8.5f, FontStyle.Regular, Tone.Muted);
+                Place(card, included, 20, 80, 20);
+                included.Text = IncludedText(row.Included);
+
+                row.IncludedChanged += delegate
+                {
+                    Shell.Settings.SetEnabled(row.Target, row.Included);
+                    Shell.Persist();
+                    included.Text = IncludedText(row.Included);
+                    included.Invalidate();
+                };
+
+                if (!controllable)
+                {
+                    Caption unreachable = new Caption(
+                        "This display offers no brightness control Dimly can reach, so it is covered with "
+                        + "a black overlay instead. Its own buttons still work.",
+                        8.5f, FontStyle.Regular, Tone.Muted);
+                    unreachable.Wrap = true;
+                    unreachable.SetBounds(Ui.Px(20), Ui.Px(104), card.Width - Ui.Px(40), Ui.Px(36));
+                    card.Controls.Add(unreachable);
+                    return;
+                }
+
+                DisplayPanel panel = new DisplayPanel();
+                panel.Target = target;
+
+                // --- what the screen is set to now ----------------------------------
+                Place(card, new Caption("Current brightness (Realtime)", 10.5f, FontStyle.Bold, Tone.Normal),
+                    20, 106, 20 + ReadoutWidth + ReadoutGap);
+                panel.BrightnessValue = Readout(card, 106, 20);
+
+                panel.BrightnessNote = new Caption(string.Empty, 8.5f, FontStyle.Regular, Tone.Muted);
+                panel.BrightnessNote.SetBounds(Ui.Px(20), Ui.Px(128), card.Width - Ui.Px(40), Ui.Px(18));
+                card.Controls.Add(panel.BrightnessNote);
+
+                panel.Brightness = new Slider();
+                panel.Brightness.Maximum = 100;
+                panel.Brightness.ValueChanged += delegate { panel.ShowBrightness(); Queue(panel); };
+                panel.Brightness.ValueCommitted += delegate { Queue(panel); };
+                Place(card, panel.Brightness, 20, 150, 20);
+
+                // --- where to leave it if its own level will not go back -------------
+                panel.Auto = new ToggleSwitch();
+                panel.Auto.SetCheckedSilently(Shell.Settings.IsAutoRestore(target));
+                panel.Auto.CheckedChanged += delegate
+                {
+                    Shell.Settings.SetAutoRestore(target, panel.Auto.Checked);
+                    panel.ShowRestoreMode();
+                    Shell.Persist();
+                };
+                panel.AutoRow = Row(card, "Auto restore", string.Empty, panel.Auto, 190);
+
+                int besideButton = UseCurrentWidth + 20 + ReadoutGap + 8;
+                panel.RestoreHeading = new Caption(string.Empty, 10.5f, FontStyle.Bold, Tone.Normal);
+                Place(card, panel.RestoreHeading, 20, 250, besideButton + ReadoutWidth + ReadoutGap);
+                panel.FallbackValue = Readout(card, 250, besideButton);
+
+                PillButton useCurrent = new PillButton();
+                useCurrent.Primary = false;
+                useCurrent.Text = "Use current brightness";
+                useCurrent.SetBounds(card.Width - Ui.Px(UseCurrentWidth + 20), Ui.Px(246),
+                    Ui.Px(UseCurrentWidth), Ui.Px(32));
+                card.Controls.Add(useCurrent);
+                panel.UseCurrent = useCurrent;
+
+                panel.Fallback = new Slider();
+                panel.Fallback.Minimum = 10;
+                panel.Fallback.Maximum = 100;
+                panel.Fallback.SetValueSilently(Shell.Settings.FallbackFor(target.Key));
+                panel.Fallback.ValueChanged += delegate { panel.ShowFallback(); };
+                panel.Fallback.ValueCommitted += delegate { SaveFallback(panel); };
+                Place(card, panel.Fallback, 20, 282, 20);
+
+                // Makes what is on screen the level to come back to, in one press.
+                useCurrent.Click += delegate
+                {
+                    panel.Fallback.SetValueSilently(panel.Brightness.Value);
+                    panel.ShowFallback();
+                    SaveFallback(panel);
+                };
+
+                panel.ShowBrightness();
+                panel.ShowFallback();
+                panel.ShowRestoreMode();
+                _panels.Add(panel);
+            }
+
+            private static string IncludedText(bool included)
+            {
+                return included
+                    ? "Dimly dims this display when you are away."
+                    : "Dimly leaves this display alone.";
+            }
+
+            private void SaveFallback(DisplayPanel panel)
+            {
+                Shell.Settings.SetFallbackFor(panel.Target.Key, panel.Fallback.Value);
+                Shell.Persist();
+            }
+
+            /// <summary>A value sitting opposite its label, against the right edge of the card.</summary>
+            private static Caption Readout(Card card, int designY, int designRightPad)
+            {
+                Caption value = new Caption(string.Empty, 9.5f, FontStyle.Regular, Tone.Muted);
+                value.AlignRight = true;
+                value.SetBounds(card.Width - Ui.Px(designRightPad + ReadoutWidth), Ui.Px(designY),
+                    Ui.Px(ReadoutWidth), Ui.Px(20));
+                card.Controls.Add(value);
+                return value;
+            }
+
+            private void BuildNotice()
+            {
+                Card card = AddCard(null, NoticeCard);
 
                 Caption note = new Caption(
                     "Dimly uses the strongest channel each display allows: the panel backlight on laptops, "
                     + "DDC/CI over the cable on monitors, and a software overlay when neither is offered.",
                     8.5f, FontStyle.Regular, Tone.Muted);
                 note.Wrap = true;
-                note.SetBounds(Ui.Px(20), Ui.Px(top + 14), Math.Max(Ui.Px(200), card.Width - Ui.Px(150)), Ui.Px(48));
+                note.SetBounds(Ui.Px(20), Ui.Px(22), Math.Max(Ui.Px(200), card.Width - Ui.Px(150)), Ui.Px(48));
                 card.Controls.Add(note);
 
                 PillButton rescan = new PillButton();
                 rescan.Primary = false;
                 rescan.Text = "Rescan";
-                rescan.SetBounds(card.Width - Ui.Px(116), Ui.Px(top + 20), Ui.Px(96), Ui.Px(34));
-                rescan.Click += delegate { Reload(); };
+                rescan.SetBounds(card.Width - Ui.Px(116), Ui.Px(30), Ui.Px(96), Ui.Px(34));
+                rescan.Click += delegate
+                {
+                    // Enumeration takes a moment and happens on the engine's worker; saying so
+                    // is better than a button that appears to have done nothing.
+                    rescan.Text = "Scanning";
+                    rescan.Enabled = false;
+                    rescan.Invalidate();
+                    Reload();
+                };
                 card.Controls.Add(rescan);
+            }
+
+            // ---------------------------------------------------------- live levels
+
+            private void Queue(DisplayPanel panel)
+            {
+                _pending = panel;
+                _settledAtTick = unchecked(Environment.TickCount + SettleMilliseconds);
+                _throttle.Stop();
+                _throttle.Start();
+            }
+
+            private void ApplyPending()
+            {
+                _throttle.Stop();
+                if (_pending == null) return;
+
+                DisplayPanel panel = _pending;
+                _pending = null;
+                Shell.Engine.SetBrightness(panel.Target, panel.Brightness.Value);
+                panel.Known = true;
+                _settledAtTick = unchecked(Environment.TickCount + SettleMilliseconds);
+            }
+
+            private void RefreshLevels()
+            {
+                if (_panels.Count == 0 || _reading) return;
+                _reading = true;
+
+                Shell.Engine.ReadLevels(delegate(Dictionary<string, int> levels)
+                {
+                    // The reply comes back on the engine's worker; these controls belong to this one.
+                    if (IsDisposed || !IsHandleCreated) { _reading = false; return; }
+                    try { BeginInvoke(new Action<Dictionary<string, int>>(ShowLevels), levels); }
+                    catch (Exception) { _reading = false; }
+                });
+            }
+
+            private void ShowLevels(Dictionary<string, int> levels)
+            {
+                _reading = false;
+
+                // Never move a slider out from under the hand that is holding it.
+                if (unchecked(Environment.TickCount - _settledAtTick) < 0) return;
+
+                foreach (DisplayPanel panel in _panels)
+                {
+                    int level;
+                    panel.Answered = true;
+                    panel.Known = levels.TryGetValue(panel.Target.Key, out level);
+                    if (panel.Known) panel.Brightness.SetValueSilently(level);
+                    panel.ShowBrightness();
+                }
             }
 
             /// <summary>Re-enumerates the hardware, then redraws the list from the result.</summary>
             private void Reload()
             {
                 Shell.Engine.ReloadDisplays();
-
-                // Enumeration happens on the engine's worker; wait for it to land before redrawing.
-                Timer settle = new Timer();
-                settle.Interval = 900;
-                settle.Tick += delegate
-                {
-                    settle.Stop();
-                    settle.Dispose();
-                    _builtFor = -1;
-                    Build();
-                };
-                settle.Start();
+                _rescan.Stop();
+                _rescan.Start();
             }
 
+            /// <summary>A display may have been plugged in or unplugged since this was last seen.</summary>
             public override void OnWindowShown()
             {
                 if (_builtFor != Shell.Displays.Targets.Count) Build();
+            }
+
+            /// <summary>Dimming and restoring change what these displays are set to, so follow along.</summary>
+            public override void OnEngineChanged()
+            {
+                if (Visible) RefreshLevels();
             }
         }
 

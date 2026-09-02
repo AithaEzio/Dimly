@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
@@ -13,6 +14,9 @@ namespace Dimly
     public sealed class TrayApp : ApplicationContext
     {
         private readonly AppSettings _settings;
+        /// <summary>The name a second copy of Dimly looks for to reach this one.</summary>
+        internal static string MessageWindowTitle { get { return MessageWindow.Title; } }
+
         private readonly MessageWindow _messages;
         private readonly DisplayManager _displays;
         private readonly MediaWatcher _media;
@@ -88,8 +92,27 @@ namespace Dimly
         private void OpenWindow()
         {
             if (_window == null || _window.IsDisposed)
+            {
                 _window = new SettingsWindow(_settings, _engine, _displays, RefreshTray);
+                _window.Hidden += delegate { HintWhereItWent(); };
+            }
             _window.Summon();
+        }
+
+        /// <summary>
+        /// Closing the window only hides it, and the first time that happens the app appears to
+        /// have vanished. Say where it went - once, ever, rather than every time.
+        /// </summary>
+        private void HintWhereItWent()
+        {
+            if (_settings.TrayHintShown || _exiting) return;
+
+            _settings.TrayHintShown = true;
+            _settings.Save();
+
+            _tray.BalloonTipTitle = AppInfo.Name + " is still running";
+            _tray.BalloonTipText = "It is down here in the tray. Double-click to open it again.";
+            _tray.ShowBalloonTip(5000);
         }
 
         private void RefreshTray()
@@ -130,12 +153,21 @@ namespace Dimly
 
         private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs e)
         {
-            if (e.Mode == PowerModes.Resume) _engine.SetLocked(false);
+            if (e.Mode == PowerModes.Resume) _engine.OnResume();
         }
 
         private void OnDisplaySettingsChanged(object sender, EventArgs e)
         {
             _engine.ReloadDisplays();
+        }
+
+        /// <summary>
+        /// Windows switched the screen back on after its display timeout. That is not a sleep,
+        /// so this is the only warning Dimly gets that every monitor handle it holds is stale.
+        /// </summary>
+        private void OnDisplayPowerOn()
+        {
+            _engine.OnDisplayPowerOn();
         }
 
         /// <summary>Called when another copy of Dimly is launched.</summary>
@@ -191,7 +223,17 @@ namespace Dimly
         /// </summary>
         private sealed class MessageWindow : Form
         {
+            /// <summary>
+            /// What a second copy of Dimly looks for to hand its request over. A broadcast was
+            /// tried first and is not delivered here, so the window is addressed by name.
+            /// </summary>
+            public const string Title = "Dimly.MessageWindow.6F1B";
+
+
             private readonly TrayApp _owner;
+            private IntPtr _displayNotice;
+
+            private bool _displayWasOn = true;
 
             public MessageWindow(TrayApp owner)
             {
@@ -201,10 +243,14 @@ namespace Dimly
                 StartPosition = FormStartPosition.Manual;
                 Location = new Point(-32000, -32000);
                 Size = new Size(1, 1);
+                Text = Title;
 
                 // Force the handle so background threads can marshal onto this thread at once.
                 IntPtr handle = Handle;
                 GC.KeepAlive(handle);
+
+                Guid setting = Native.GUID_CONSOLE_DISPLAY_STATE;
+                _displayNotice = Native.RegisterPowerSettingNotification(handle, ref setting, 0);
             }
 
             protected override void SetVisibleCore(bool value)
@@ -216,7 +262,43 @@ namespace Dimly
             {
                 if (Program.SecondInstanceMessage != 0 && m.Msg == Program.SecondInstanceMessage)
                     _owner.OnSecondInstance();
+                else if (m.Msg == Native.WM_POWERBROADCAST && (int)m.WParam == Native.PBT_POWERSETTINGCHANGE)
+                    OnPowerSetting(m.LParam);
                 base.WndProc(ref m);
+            }
+
+            /// <summary>
+            /// Windows reports the display state as off, on, or dimmed by its own timeout. Only
+            /// the change from off back to on matters, and it is announced on every state
+            /// change - including at startup - so the edge is what is acted on, not the value.
+            /// </summary>
+            private void OnPowerSetting(IntPtr data)
+            {
+                Native.POWERBROADCAST_SETTING setting;
+                try
+                {
+                    setting = (Native.POWERBROADCAST_SETTING)Marshal.PtrToStructure(
+                        data, typeof(Native.POWERBROADCAST_SETTING));
+                }
+                catch (Exception) { return; }
+
+                if (setting.PowerSetting != Native.GUID_CONSOLE_DISPLAY_STATE) return;
+
+                bool on = setting.Data != 0;
+                bool wasOn = _displayWasOn;
+                _displayWasOn = on;
+
+                if (on && !wasOn) _owner.OnDisplayPowerOn();
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing && _displayNotice != IntPtr.Zero)
+                {
+                    Native.UnregisterPowerSettingNotification(_displayNotice);
+                    _displayNotice = IntPtr.Zero;
+                }
+                base.Dispose(disposing);
             }
         }
 

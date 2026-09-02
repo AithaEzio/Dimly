@@ -259,6 +259,9 @@ namespace Dimly
         [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "RegisterWindowMessageW")]
         public static extern int RegisterWindowMessage(string name);
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "FindWindowW")]
+        public static extern IntPtr FindWindow(string className, string windowName);
+
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool PostMessage(IntPtr hWnd, int message, IntPtr wParam, IntPtr lParam);
@@ -270,10 +273,31 @@ namespace Dimly
         [DllImport("dwmapi.dll")]
         private static extern int DwmSetWindowAttribute(IntPtr hWnd, int attribute, ref int value, int size);
 
+        public const int WM_POWERBROADCAST = 0x0218;
+        public const int PBT_POWERSETTINGCHANGE = 0x8013;
+
+        /// <summary>The console session's display state: 0 off, 1 on, 2 dimmed by Windows.</summary>
+        public static readonly Guid GUID_CONSOLE_DISPLAY_STATE =
+            new Guid("6fe69556-704a-47a0-8f24-c28d936fda47");
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POWERBROADCAST_SETTING
+        {
+            public Guid PowerSetting;
+            public int DataLength;
+            public byte Data;
+        }
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern IntPtr RegisterPowerSettingNotification(IntPtr recipient,
+            ref Guid powerSetting, int flags);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        public static extern bool UnregisterPowerSettingNotification(IntPtr registration);
+
         public const int WM_NCLBUTTONDOWN = 0x00A1;
         public const int HTCAPTION = 2;
 
-        public static readonly IntPtr HWND_BROADCAST = new IntPtr(0xFFFF);
         public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
 
         public const uint SWP_NOSIZE = 0x0001;

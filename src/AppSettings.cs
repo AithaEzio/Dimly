@@ -29,12 +29,27 @@ namespace Dimly
         /// <summary>Count real keyboard, mouse and gamepad use instead of trusting the system
         /// idle clock, which any self-reporting HID device can pin at zero.</summary>
         public bool IgnoreNoisyDevices { get; set; }
+
+        /// <summary>Where to leave a display whose own brightness could not be put back. Used
+        /// for any display without an entry of its own in <see cref="DisplayFallbacks"/>.</summary>
+        public int RestoreFallback { get; set; }
+
+        /// <summary>Fallback levels chosen per display, keyed by the display's stable id.</summary>
+        public Dictionary<string, int> DisplayFallbacks { get; private set; }
+
+        /// <summary>Whether the "it is still in the tray" hint has been shown. Once is enough.</summary>
+        public bool TrayHintShown { get; set; }
         public bool StartHidden { get; set; }
         public string ThemeId { get; set; }
 
         /// <summary>Display keys the user has opted out of. Unknown keys are kept so that
         /// unplugging a monitor does not silently re-enable it.</summary>
         public HashSet<string> DisabledDisplays { get; private set; }
+
+        /// <summary>Display keys told to put back exactly the brightness they had, rather than
+        /// the level chosen for them. Auto restore is the default, so this holds the exceptions
+        /// - the same way <see cref="DisabledDisplays"/> holds them for dimming.</summary>
+        public HashSet<string> ManualRestoreDisplays { get; private set; }
 
         public AppSettings()
         {
@@ -46,9 +61,13 @@ namespace Dimly
             SkipFullscreen = true;
             HoldWhileAudioPlays = true;
             IgnoreNoisyDevices = false;
+            RestoreFallback = 100;
+            TrayHintShown = false;
             StartHidden = false;
             ThemeId = "midnight";
             DisabledDisplays = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            ManualRestoreDisplays = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            DisplayFallbacks = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         }
 
         public bool IsEnabled(DisplayTarget display)
@@ -56,10 +75,38 @@ namespace Dimly
             return !DisabledDisplays.Contains(display.Key);
         }
 
+        /// <summary>
+        /// True when this display is put back to the level chosen for it. Dimly then never asks
+        /// the display how bright it is: it dims to the away level and comes back to the chosen
+        /// one, which is the whole point of the setting.
+        /// </summary>
+        public bool IsAutoRestore(DisplayTarget display)
+        {
+            return !ManualRestoreDisplays.Contains(display.Key);
+        }
+
+        public void SetAutoRestore(DisplayTarget display, bool automatic)
+        {
+            if (automatic) ManualRestoreDisplays.Remove(display.Key);
+            else ManualRestoreDisplays.Add(display.Key);
+        }
+
         public void SetEnabled(DisplayTarget display, bool enabled)
         {
             if (enabled) DisabledDisplays.Remove(display.Key);
             else DisabledDisplays.Add(display.Key);
+        }
+
+        /// <summary>This display's own fallback, or the shared one if it has never been given one.</summary>
+        public int FallbackFor(string displayKey)
+        {
+            int level;
+            return DisplayFallbacks.TryGetValue(displayKey, out level) ? level : RestoreFallback;
+        }
+
+        public void SetFallbackFor(string displayKey, int level)
+        {
+            DisplayFallbacks[displayKey] = Math.Max(10, Math.Min(100, level));
         }
 
         // ------------------------------------------------------------ storage
@@ -121,11 +168,29 @@ namespace Dimly
                 case "SkipFullscreen": SkipFullscreen = ParseBool(value, SkipFullscreen); break;
                 case "HoldWhileAudioPlays": HoldWhileAudioPlays = ParseBool(value, HoldWhileAudioPlays); break;
                 case "IgnoreNoisyDevices": IgnoreNoisyDevices = ParseBool(value, IgnoreNoisyDevices); break;
+                case "RestoreFallback": RestoreFallback = ParseInt(value, RestoreFallback); break;
+                case "TrayHintShown": TrayHintShown = ParseBool(value, TrayHintShown); break;
                 case "StartHidden": StartHidden = ParseBool(value, StartHidden); break;
                 case "Theme": ThemeId = value; break;
                 case "DisabledDisplays":
                     foreach (string entry in value.Split('|'))
                         if (entry.Length > 0) DisabledDisplays.Add(entry);
+                    break;
+                case "ManualRestoreDisplays":
+                    foreach (string entry in value.Split('|'))
+                        if (entry.Length > 0) ManualRestoreDisplays.Add(entry);
+                    break;
+                case "DisplayFallbacks":
+                    foreach (string entry in value.Split('|'))
+                    {
+                        // Display keys contain "&" and "\\" but never "=", so the last one splits it.
+                        int split = entry.LastIndexOf('=');
+                        int level;
+                        if (split <= 0) continue;
+                        if (!int.TryParse(entry.Substring(split + 1), NumberStyles.Integer,
+                                CultureInfo.InvariantCulture, out level)) continue;
+                        SetFallbackFor(entry.Substring(0, split), level);
+                    }
                     break;
             }
         }
@@ -135,6 +200,7 @@ namespace Dimly
             AwayBrightness = Math.Max(0, Math.Min(100, AwayBrightness));
             IdleSeconds = Math.Max(MinIdleSeconds, Math.Min(MaxIdleSeconds, IdleSeconds));
             FadeMillis = Math.Max(100, Math.Min(4000, FadeMillis));
+            RestoreFallback = Math.Max(10, Math.Min(100, RestoreFallback));
             if (Theme.Find(ThemeId) == null) ThemeId = "midnight";
         }
 
@@ -155,12 +221,23 @@ namespace Dimly
                 Write(text, "SkipFullscreen", SkipFullscreen);
                 Write(text, "HoldWhileAudioPlays", HoldWhileAudioPlays);
                 Write(text, "IgnoreNoisyDevices", IgnoreNoisyDevices);
+                Write(text, "RestoreFallback", RestoreFallback);
+                Write(text, "TrayHintShown", TrayHintShown);
                 Write(text, "StartHidden", StartHidden);
                 text.AppendLine("Theme=" + ThemeId);
 
                 string[] disabled = new string[DisabledDisplays.Count];
                 DisabledDisplays.CopyTo(disabled);
                 text.AppendLine("DisabledDisplays=" + string.Join("|", disabled));
+
+                string[] manual = new string[ManualRestoreDisplays.Count];
+                ManualRestoreDisplays.CopyTo(manual);
+                text.AppendLine("ManualRestoreDisplays=" + string.Join("|", manual));
+
+                List<string> fallbacks = new List<string>();
+                foreach (KeyValuePair<string, int> entry in DisplayFallbacks)
+                    fallbacks.Add(entry.Key + "=" + entry.Value.ToString(CultureInfo.InvariantCulture));
+                text.AppendLine("DisplayFallbacks=" + string.Join("|", fallbacks.ToArray()));
 
                 File.WriteAllText(path, text.ToString(), Encoding.UTF8);
             }

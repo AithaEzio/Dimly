@@ -160,6 +160,12 @@ try {
     Start-Process $exe -ArgumentList '--tray' | Out-Null
     Start-Sleep -Seconds 4        # let it enumerate displays and start ticking
 
+    # Start the countdown from zero before playing anything. Without this the machine may
+    # already be past the delay when the tone starts, and the dim-then-restore that follows is
+    # correct behaviour being mistaken for a failure.
+    [Media]::Nudge()
+    Start-Sleep -Milliseconds 500
+
     # Playback on, then go completely quiet on the input front. The 5s delay will pass several
     # times over; nothing should dim, because sound is holding the countdown at zero.
     $player = New-Object System.Media.SoundPlayer $wav
@@ -196,8 +202,10 @@ try {
     $early = @($afterStop[0..3] | Where-Object { $_ -ge 0 })
     Check 'no instant dim when playback stops' (($early | Measure-Object -Minimum).Minimum -ge ($baseline - 3))
 
-    $late = @($afterStop[8..17] | Where-Object { $_ -ge 0 })
-    CheckIdle 'dims once playback has stopped' (($late | Measure-Object -Maximum).Maximum -le 45) $idleAfterStop 12
+    # The dim is due once the grace window and the delay have both passed, so judge it by the
+    # settled tail rather than by a sample chosen to land exactly on the transition.
+    $tail = @($afterStop[($afterStop.Count - 5)..($afterStop.Count - 1)] | Where-Object { $_ -ge 0 })
+    CheckIdle 'dims once playback has stopped' (($tail | Measure-Object -Maximum).Maximum -le 45) $idleAfterStop 12
 
     [Media]::Nudge()
     Start-Sleep -Seconds 3

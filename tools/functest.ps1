@@ -75,10 +75,42 @@ public static class Ddc {
 
 $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'dist\Dimly.exe'
+$settings = Join-Path $env:APPDATA 'Dimly\settings.ini'
 
 if (-not [Ddc]::Open()) { throw 'No DDC/CI monitor to measure.' }
-$baseline = [Ddc]::Read()
+$baseline = -1
+for ($try = 0; $try -lt 8 -and $baseline -lt 0; $try++) {
+    $baseline = [Ddc]::Read()
+    if ($baseline -lt 0) { Start-Sleep -Milliseconds 400 }
+}
+if ($baseline -lt 0) { throw 'The monitor never answered a brightness query.' }
 Write-Host "Baseline brightness: $baseline%"
+
+if ($baseline -lt 50) {
+    Write-Host ''
+    Write-Host "SKIPPED - the display is already at $baseline%, at or near the level this test" -ForegroundColor Yellow
+    Write-Host 'dims to, so dimming would prove nothing. Run tools/restore.ps1 first.'
+    exit 0
+}
+
+# Seed the settings this test assumes, rather than inheriting whatever was left behind. A run
+# that dims to 30% is only evidence if the display did not start there already.
+New-Item -ItemType Directory -Force -Path (Split-Path $settings) | Out-Null
+Set-Content -Path $settings -Value @(
+    'AwayBrightness=30'
+    'IdleSeconds=1800'
+    'Fade=0'
+    'DimOnLock=0'
+    'SkipFullscreen=0'
+    'HoldWhileAudioPlays=0'
+    'IgnoreNoisyDevices=0'
+    'RestoreFallback=100'
+    'TrayHintShown=1'
+    'StartHidden=0'
+    'Theme=midnight'
+    'DisabledDisplays='
+)
+
 
 try {
     Get-Process -Name Dimly -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -121,7 +153,13 @@ try {
     Write-Host 'Clicking Restore brightness...'
     [Ddc]::ClickAt($handle, $px, $py)
     Start-Sleep -Milliseconds 2000
-    $restored = [Ddc]::Read()
+
+    # One unanswered query is not a failed restore; ask again before believing it.
+    $restored = -1
+    for ($i = 0; $i -lt 8 -and $restored -lt 0; $i++) {
+        $restored = [Ddc]::Read()
+        if ($restored -lt 0) { Start-Sleep -Milliseconds 400 }
+    }
     Write-Host "After restore: $restored%"
 
     Get-Process -Name Dimly -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -129,8 +167,10 @@ try {
     $final = [Ddc]::Read()
 
     Write-Host ''
-    Write-Host "baseline=$baseline  dimmed=$dimmed  restored=$restored  afterExit=$final"
-    if ($dimmed -le 25 -and $restored -ge ($baseline - 3) -and $final -ge ($baseline - 3)) {
+    # Auto restore ships on, so coming back means coming back to the level it was given -
+    # RestoreFallback above - and not to whatever the screen happened to be at beforehand.
+    Write-Host "baseline=$baseline  dimmed=$dimmed  restored=$restored  afterExit=$final  (auto restore level: 100)"
+    if ($dimmed -le 35 -and $restored -ge 97 -and $final -ge 97) {
         Write-Host 'PASS - dimmed to the away level and came back.' -ForegroundColor Green
     } else {
         Write-Host 'FAIL - see the numbers above.' -ForegroundColor Red
@@ -143,5 +183,6 @@ finally {
         Write-Host "Restoring brightness to $baseline% ..." -ForegroundColor Yellow
         [Ddc]::Write($baseline)
     }
+    if (Test-Path $settings) { Remove-Item $settings }
     [Ddc]::Close()
 }

@@ -28,14 +28,27 @@ namespace Dimly
             {
                 if (!owned)
                 {
-                    if (SecondInstanceMessage != 0)
-                        Native.PostMessage(Native.HWND_BROADCAST, SecondInstanceMessage, IntPtr.Zero, IntPtr.Zero);
+                    SignalRunningCopy();
                     return;
                 }
 
                 Run(startHidden);
                 GC.KeepAlive(instance);
             }
+        }
+
+        /// <summary>
+        /// Asks the copy already running to show its window. Its message window is found by
+        /// name and posted to directly: a broadcast reaches only windows Windows chooses to
+        /// deliver to, and this one - never shown, and off-screen - is not among them.
+        /// </summary>
+        private static void SignalRunningCopy()
+        {
+            if (SecondInstanceMessage == 0) return;
+
+            IntPtr window = Native.FindWindow(null, TrayApp.MessageWindowTitle);
+            if (window != IntPtr.Zero)
+                Native.PostMessage(window, SecondInstanceMessage, IntPtr.Zero, IntPtr.Zero);
         }
 
         private static void Run(bool startHidden)

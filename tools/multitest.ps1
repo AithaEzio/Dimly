@@ -60,20 +60,23 @@ public static class Multi {
     }
 
     /// Brightness of every display, in enumeration order. -1 means "does not answer DDC/CI",
-    /// which is exactly the case the overlay exists to cover.
+    /// which is exactly the case the overlay exists to cover. A monitor drops the occasional
+    /// query, so each one is asked more than once before it counts as no answer - otherwise
+    /// this harness reports a restore as failed when all that failed was its own reading.
     public static int[] ReadAll() {
         List<int> values = new List<int>();
         foreach (IntPtr screen in Screens()) {
-            uint count = 0;
             int value = -1;
-            if (GetNumberOfPhysicalMonitorsFromHMONITOR(screen, ref count) && count > 0) {
+            for (int attempt = 0; attempt < 3 && value < 0; attempt++) {
+                if (attempt > 0) System.Threading.Thread.Sleep(60);
+                uint count = 0;
+                if (!GetNumberOfPhysicalMonitorsFromHMONITOR(screen, ref count) || count == 0) continue;
                 PM[] monitors = new PM[count];
-                if (GetPhysicalMonitorsFromHMONITOR(screen, count, monitors)) {
-                    uint lo = 0, cur = 0, hi = 0;
-                    if (GetMonitorBrightness(monitors[0].handle, ref lo, ref cur, ref hi) && hi > lo)
-                        value = (int)Math.Round((cur - (double)lo) * 100.0 / (hi - lo));
-                    foreach (PM m in monitors) DestroyPhysicalMonitor(m.handle);
-                }
+                if (!GetPhysicalMonitorsFromHMONITOR(screen, count, monitors)) continue;
+                uint lo = 0, cur = 0, hi = 0;
+                if (GetMonitorBrightness(monitors[0].handle, ref lo, ref cur, ref hi) && hi > lo)
+                    value = (int)Math.Round((cur - (double)lo) * 100.0 / (hi - lo));
+                foreach (PM m in monitors) DestroyPhysicalMonitor(m.handle);
             }
             values.Add(value);
         }
@@ -144,6 +147,31 @@ for ($try = 0; $try -lt 8; $try++) {
 }
 if ($baseline.Count -eq 0) { throw 'No displays found.' }
 
+if (($baseline | Where-Object { $_ -ge 0 -and $_ -lt 50 }).Count -gt 0) {
+    Write-Host ''
+    Write-Host 'SKIPPED - a display is already at or near the level this test dims to, so' -ForegroundColor Yellow
+    Write-Host 'dimming it would prove nothing. Run tools/restore.ps1 first.'
+    exit 0
+}
+
+# Seed the settings this test assumes, rather than inheriting whatever was left behind. A run
+# that dims to 30% is only evidence if the display did not start there already.
+New-Item -ItemType Directory -Force -Path (Split-Path $settings) | Out-Null
+Set-Content -Path $settings -Value @(
+    'AwayBrightness=30'
+    'IdleSeconds=1800'
+    'Fade=0'
+    'DimOnLock=0'
+    'SkipFullscreen=0'
+    'HoldWhileAudioPlays=0'
+    'IgnoreNoisyDevices=0'
+    'RestoreFallback=100'
+    'TrayHintShown=1'
+    'StartHidden=0'
+    'Theme=midnight'
+    'DisabledDisplays='
+)
+
 $ddc = @(0..($baseline.Count - 1) | Where-Object { $baseline[$_] -ge 0 })
 $soft = @(0..($baseline.Count - 1) | Where-Object { $baseline[$_] -lt 0 })
 Write-Host "Displays: $($baseline.Count)   answering DDC/CI: $($ddc.Count)   overlay-only: $($soft.Count)"
@@ -157,7 +185,6 @@ function Check([string]$what, [bool]$ok) {
 
 try {
     Get-Process -Name Dimly -ErrorAction SilentlyContinue | Stop-Process -Force
-    if (Test-Path $settings) { Remove-Item $settings }
     Start-Sleep -Milliseconds 500
 
     [Multi]::Nudge()
@@ -190,7 +217,7 @@ try {
     foreach ($o in $overlays) { Write-Host "  overlay: $o" }
 
     $allDown = $true
-    foreach ($i in $ddc) { if ($dimmed[$i] -lt 0 -or $dimmed[$i] -gt 25) { $allDown = $false } }
+    foreach ($i in $ddc) { if ($dimmed[$i] -lt 0 -or $dimmed[$i] -gt 35) { $allDown = $false } }
     Check "every DDC/CI display dimmed ($($ddc.Count) of them)" $allDown
     Check "one overlay per display without DDC/CI ($($soft.Count))" ($overlays.Count -eq $soft.Count)
     if ($overlays.Count -gt 0) {
@@ -204,15 +231,17 @@ try {
     $back = [Multi]::ReadAll()
     Write-Host "  after restore: $($back -join ', ')"
     $allBack = $true
-    foreach ($i in $ddc) { if ($back[$i] -lt ($baseline[$i] - 3)) { $allBack = $false } }
-    Check 'every DDC/CI display restored' $allBack
+    # Auto restore is on, so every display comes back to the level it was given, not to the
+    # brightness it happened to be at.
+    foreach ($i in $ddc) { if ($back[$i] -lt 97) { $allBack = $false } }
+    Check 'every DDC/CI display restored to the auto restore level' $allBack
     Check 'overlays withdrawn' (([Multi]::Overlays([uint32]$app.Id)).Count -eq 0)
 
     Get-Process -Name Dimly -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Milliseconds 900
     $final = [Multi]::ReadAll()
     $stillBack = $true
-    foreach ($i in $ddc) { if ($final[$i] -lt ($baseline[$i] - 3)) { $stillBack = $false } }
+    foreach ($i in $ddc) { if ($final[$i] -lt 97) { $stillBack = $false } }
     Check 'still restored after exit' $stillBack
 
     Write-Host ''

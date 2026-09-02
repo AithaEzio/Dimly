@@ -32,7 +32,6 @@ $arguments = @(
     "/out:$output"
     "/win32icon:$icon"
     "/win32manifest:$(Join-Path $root 'src\App.manifest')"
-    "/resource:$icon,Dimly.dimly.ico"
     '/reference:System.dll'
     '/reference:System.Core.dll'
     '/reference:System.Drawing.dll'

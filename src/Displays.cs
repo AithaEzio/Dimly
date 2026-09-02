@@ -23,8 +23,15 @@ namespace Dimly
     {
         BrightnessKind Kind { get; }
         bool TryRead(out int percent);
+
         /// <summary>Applies a 0-100 level. Throws when the hardware refuses.</summary>
         void Write(int percent);
+
+        /// <summary>
+        /// Re-establishes whatever handle the display may have invalidated. Powering a monitor
+        /// off, or the machine sleeping, quietly kills the handles held across it.
+        /// </summary>
+        void Reacquire();
     }
 
     // ---------------------------------------------------------------- backends
@@ -104,9 +111,17 @@ namespace Dimly
             _methods.InvokeMethod("WmiSetBrightness", new object[] { (uint)1, (byte)Clamp(percent) });
         }
 
+        /// <summary>Drops the cached method object; the next write makes a fresh one.</summary>
+        public void Reacquire()
+        {
+            if (_methods == null) return;
+            _methods.Dispose();
+            _methods = null;
+        }
+
         public void Dispose()
         {
-            if (_methods != null) { _methods.Dispose(); _methods = null; }
+            Reacquire();
         }
 
         /// <summary>
@@ -145,12 +160,14 @@ namespace Dimly
     /// <summary>External monitors that answer DDC/CI brightness commands.</summary>
     internal sealed class DdcBackend : IBrightnessBackend
     {
-        private readonly uint _minimum;
-        private readonly uint _range;
+        private readonly IntPtr _screen;
+        private uint _minimum;
+        private uint _range;
         private IntPtr _handle;
 
-        private DdcBackend(IntPtr handle, string description, uint minimum, uint maximum)
+        private DdcBackend(IntPtr screen, IntPtr handle, string description, uint minimum, uint maximum)
         {
+            _screen = screen;
             _handle = handle;
             _minimum = minimum;
             _range = maximum - minimum;
@@ -179,7 +196,7 @@ namespace Dimly
                     && Native.GetMonitorBrightness(monitor.hPhysicalMonitor, ref minimum, ref current, ref maximum)
                     && maximum > minimum)
                 {
-                    backend = new DdcBackend(monitor.hPhysicalMonitor,
+                    backend = new DdcBackend(hMonitor, monitor.hPhysicalMonitor,
                         monitor.szPhysicalMonitorDescription, minimum, maximum);
                 }
                 else
@@ -190,16 +207,29 @@ namespace Dimly
             return backend;
         }
 
+        /// <summary>
+        /// A monitor answers over a slow serial link and drops the occasional query, so one
+        /// refusal is not an answer. Past these attempts it really is not talking.
+        /// </summary>
+        private const int ReadAttempts = 3;
+        private const int ReadPauseMilliseconds = 60;
+
         public bool TryRead(out int percent)
         {
             percent = 100;
-            uint minimum = 0, current = 0, maximum = 0;
-            if (!Native.GetMonitorBrightness(_handle, ref minimum, ref current, ref maximum)) return false;
-            if (maximum <= minimum) return false;
-
-            percent = (int)Math.Round((current - (double)minimum) * 100.0 / (maximum - minimum));
-            percent = WmiBacklight.Clamp(percent);
-            return true;
+            for (int attempt = 1; ; attempt++)
+            {
+                uint minimum = 0, current = 0, maximum = 0;
+                if (Native.GetMonitorBrightness(_handle, ref minimum, ref current, ref maximum)
+                    && maximum > minimum)
+                {
+                    percent = WmiBacklight.Clamp(
+                        (int)Math.Round((current - (double)minimum) * 100.0 / (maximum - minimum)));
+                    return true;
+                }
+                if (attempt >= ReadAttempts) return false;
+                Thread.Sleep(ReadPauseMilliseconds);
+            }
         }
 
         public void Write(int percent)
@@ -207,6 +237,33 @@ namespace Dimly
             uint value = _minimum + (uint)Math.Round(_range * WmiBacklight.Clamp(percent) / 100.0);
             if (!Native.SetMonitorBrightness(_handle, value))
                 throw new InvalidOperationException("The monitor rejected a DDC/CI brightness command.");
+        }
+
+        /// <summary>
+        /// Asks the monitor for a new physical handle. The old one survives a display being
+        /// powered off in name only: commands sent to it are accepted and ignored.
+        /// </summary>
+        public void Reacquire()
+        {
+            IntPtr stale = Interlocked.Exchange(ref _handle, IntPtr.Zero);
+            if (stale != IntPtr.Zero) Native.DestroyPhysicalMonitor(stale);
+
+            uint count = 0;
+            if (!Native.GetNumberOfPhysicalMonitorsFromHMONITOR(_screen, ref count) || count == 0) return;
+
+            Native.PHYSICAL_MONITOR[] monitors = new Native.PHYSICAL_MONITOR[count];
+            if (!Native.GetPhysicalMonitorsFromHMONITOR(_screen, count, monitors)) return;
+
+            _handle = monitors[0].hPhysicalMonitor;
+            for (int i = 1; i < monitors.Length; i++)
+                Native.DestroyPhysicalMonitor(monitors[i].hPhysicalMonitor);
+
+            uint minimum = 0, current = 0, maximum = 0;
+            if (Native.GetMonitorBrightness(_handle, ref minimum, ref current, ref maximum) && maximum > minimum)
+            {
+                _minimum = minimum;
+                _range = maximum - minimum;
+            }
         }
 
         public void Dispose()
@@ -269,6 +326,11 @@ namespace Dimly
                 Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
         }
 
+        /// <summary>An overlay owns no handle that anything else can invalidate.</summary>
+        public void Reacquire()
+        {
+        }
+
         public void Dispose()
         {
             if (_window == null) return;
@@ -311,6 +373,12 @@ namespace Dimly
     /// <summary>One display, plus the brightness channel that turned out to work for it.</summary>
     public sealed class DisplayTarget : IDisposable
     {
+        /// <summary>DDC/CI quantises, so a read rarely returns the exact number written.</summary>
+        private const int VerifyTolerance = 3;
+
+        /// <summary>Long enough for a monitor to have acted before its brightness is read back.</summary>
+        private const int SettleMilliseconds = 150;
+
         private readonly Func<IBrightnessBackend> _overlayFactory;
         private IBrightnessBackend _backend;
         private bool _degraded;
@@ -345,6 +413,13 @@ namespace Dimly
         /// <summary>The last value written, so an interrupted fade knows where it stopped.</summary>
         public int? Applied { get; set; }
 
+        /// <summary>
+        /// The level this display should be sitting at with the user present. Kept after a
+        /// restore has been let go of, so that a display switched off by Windows and brought
+        /// back dim can be put right without anything left to compare against.
+        /// </summary>
+        public int? LastAwakeLevel { get; set; }
+
         public bool TryRead(out int percent)
         {
             try { return _backend.TryRead(out percent); }
@@ -355,6 +430,17 @@ namespace Dimly
         {
             try
             {
+                _backend.Write(percent);
+                return;
+            }
+            catch (Exception) { }
+
+            // A display that has just come back from being powered off hands out new handles,
+            // and the old ones fail. Try again with fresh ones before writing the hardware off:
+            // giving up here used to strand a perfectly good monitor on the overlay for good.
+            try
+            {
+                _backend.Reacquire();
                 _backend.Write(percent);
                 return;
             }
@@ -370,6 +456,46 @@ namespace Dimly
             _backend = _overlayFactory();
             replaced.Dispose();
             _backend.Write(percent);
+        }
+
+        /// <summary>Re-establishes the display's handle after a sleep or a power cycle.</summary>
+        public void Reacquire()
+        {
+            try { _backend.Reacquire(); }
+            catch (Exception) { }
+        }
+
+        /// <summary>
+        /// Writes a level and proves it took effect, which matters most when putting brightness
+        /// back. A monitor that has just been powered on will accept a command against a stale
+        /// handle and do nothing with it, reporting success either way - so a restore that is
+        /// merely sent is not a restore. Returns false if the display cannot be made to agree.
+        /// </summary>
+        public bool TryWriteVerified(int percent)
+        {
+            // An overlay reports the hardware behind it, never its own dimming, so there is
+            // nothing to read back and compare against.
+            if (Kind == BrightnessKind.Overlay)
+            {
+                try { Write(percent); return true; }
+                catch (Exception) { return false; }
+            }
+
+            if (Confirm(percent)) return true;
+            Reacquire();
+            return Confirm(percent);
+        }
+
+        private bool Confirm(int percent)
+        {
+            int actual;
+            if (TryRead(out actual) && Math.Abs(actual - percent) <= VerifyTolerance) return true;
+
+            try { Write(percent); }
+            catch (Exception) { return false; }
+
+            Thread.Sleep(SettleMilliseconds);
+            return TryRead(out actual) && Math.Abs(actual - percent) <= VerifyTolerance;
         }
 
         public void Dispose()

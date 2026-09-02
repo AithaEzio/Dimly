@@ -10,9 +10,9 @@ $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $refs = @('/reference:System.dll', '/reference:System.Core.dll', '/reference:System.Drawing.dll',
           '/reference:System.Windows.Forms.dll', '/reference:System.Management.dll')
 
-function Build([string]$name, [string[]]$sources) {
+function Build([string]$name, [string[]]$sources, [string[]]$extra = @()) {
     $out = Join-Path $env:TEMP "dimly-$name.exe"
-    & $csc (@('/nologo', '/target:exe', '/langversion:5', "/out:$out") + $refs +
+    & $csc (@('/nologo', '/target:exe', '/langversion:5', "/out:$out") + $refs + $extra +
             ($sources | ForEach-Object { Join-Path $root $_ }))
     if ($LASTEXITCODE -ne 0) { throw "$name failed to build" }
     $out
@@ -36,10 +36,17 @@ $fullscreen = Build 'fullscreentest' @('src\Native.cs', 'tools\fullscreentest.cs
 $fullscreenOk = $LASTEXITCODE -eq 0
 
 Write-Host ''
+Write-Host '== icon resource ==' -ForegroundColor Cyan
+$icons = Build 'iconprobe' @('src\AppInfo.cs', 'tools\iconprobe.cs') `
+                @("/win32icon:$(Join-Path $root 'assets\dimly.ico')")
+& $icons
+$iconsOk = $LASTEXITCODE -eq 0
+
+Write-Host ''
 Write-Host '== display enumeration on this machine ==' -ForegroundColor Cyan
 $probe = Build 'probe' @('src\Native.cs', 'src\Displays.cs', 'tools\probe.cs')
 & $probe
 
 Write-Host ''
-if ($engineOk -and $fullscreenOk -and $activityOk) { Write-Host 'All checks passed.' -ForegroundColor Green }
+if ($engineOk -and $fullscreenOk -and $activityOk -and $iconsOk) { Write-Host 'All checks passed.' -ForegroundColor Green }
 else { Write-Host 'CHECKS FAILED.' -ForegroundColor Red; exit 1 }
