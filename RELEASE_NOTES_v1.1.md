@@ -1,6 +1,6 @@
 # Dimly v1.1
 
-A single 184 KB executable. No installer, no runtime to fetch, no service, nothing written
+A single 187 KB executable. No installer, no runtime to fetch, no service, nothing written
 outside `%AppData%\Dimly`.
 
 ---
@@ -85,7 +85,9 @@ Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 ## Changed
 
-- **Half the size of 1.0 despite all of the above:** 374 KB → 184 KB.
+- **Half the size of 1.0 despite all of the above:** 374 KB → 187 KB.
+- **The scrollbar is drawn in the theme** rather than left as Windows' grey one — the
+  panel behind it still does the scrolling, so the wheel and keyboard behave as before.
 - Activity is read through **Raw Input instead of a low-level keyboard hook** — the API every
   keylogger reaches for, and the most heuristic-tripping thing a small unsigned utility can do.
   Dimly only ever looks at which *kind* of device sent an event, never at what was typed.
@@ -102,7 +104,7 @@ Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 The executable is unsigned, so SmartScreen shows **"Windows protected your PC"** the first
 time. Choose **More info → Run anyway**. A code-signing certificate costs a few hundred pounds
-a year, which is hard to justify for a free 184 KB utility.
+a year, which is hard to justify for a free 187 KB utility.
 
 A handful of antivirus engines flag it on machine-learning heuristics rather than signatures —
 3 of 60 on VirusTotal, with every signature-based engine clean. The README explains what those
@@ -114,10 +116,10 @@ verdicts are and how to verify the build yourself.
 Get-FileHash .\Dimly.exe -Algorithm SHA256
 ```
 
-`Dimly.exe` — 188,416 bytes
+`Dimly.exe` — 190,976 bytes
 
 ```
-SHA-256  008fe225750f1fef76a82ee70d41265edeeb962920ba555a4fc4c4eef95bc950
+SHA-256  b0fe46d2c5035d8ad05b2e7310739e283675753c6b5c3a06f2cc47e836d003fa
 ```
 
 ---

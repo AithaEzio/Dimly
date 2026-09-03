@@ -13,7 +13,7 @@ One file. No installer, no runtime download, no background service.
 ![Platform](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
 ![Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4)
 ![Version](https://img.shields.io/badge/version-1.1-6E8CFF)
-![Size](https://img.shields.io/badge/size-184%20KB-brightgreen)
+![Size](https://img.shields.io/badge/size-187%20KB-brightgreen)
 ![Licence](https://img.shields.io/badge/licence-MIT-blue)
 
 <img src="assets/preview/ui-away.png" width="820" alt="Dimly's Away &amp; dimming page">
@@ -26,7 +26,7 @@ One file. No installer, no runtime download, no background service.
 
 Walking away from a bright monitor wastes power and burns backlight hours, and every "dimmer"
 utility either needs an installer, drags in a runtime, or just throws a black sheet over the
-screen. Dimly is a single 184 KB executable that turns the *actual* backlight down and brings
+screen. Dimly is a single 187 KB executable that turns the *actual* backlight down and brings
 it back when you sit down again.
 
 ## Features
@@ -297,12 +297,12 @@ that ships with it, so there is no SDK, no NuGet restore and no project file.
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-The result is `dist/Dimly.exe`, about 184 KB, with the icon and the version resource embedded. Add `-Run` to launch it
+The result is `dist/Dimly.exe`, about 187 KB, with the icon and the version resource embedded. Add `-Run` to launch it
 straight after building. The icon itself is generated from code by
 `tools/make-icon.ps1` — there are no binary art assets to trust.
 
 Targeting Framework 4.8 rather than .NET 8 is a deliberate trade: it is what makes a genuinely
-single-file, install-free 184 KB executable possible, where a modern .NET build would be either
+single-file, install-free 187 KB executable possible, where a modern .NET build would be either
 a ~150 MB self-contained file or a runtime download. The cost is C# 5 language level.
 
 ## Tests

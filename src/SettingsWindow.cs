@@ -77,6 +77,9 @@ namespace Dimly
         private const int DesignWidth = 900;
         private const int DesignHeight = 840;
         private const int SidebarWidth = 210;
+
+        /// <summary>The themed scrollbar, and the room a page leaves clear for it.</summary>
+        internal const int ScrollerWidth = 8;
         private const int CaptionHeight = 54;
         private const int PagePadding = 28;
 
@@ -87,7 +90,9 @@ namespace Dimly
 
         private readonly Sidebar _sidebar;
         private readonly CaptionBar _caption;
-        private readonly Panel _content;
+        private readonly Panel _clip;
+        private readonly ScrollHost _content;
+        private readonly Scroller _scroller;
         private readonly List<Page> _pages = new List<Page>();
         private readonly Timer _statusTimer;
 
@@ -124,13 +129,30 @@ namespace Dimly
                 ClientSize.Width - Ui.Px(SidebarWidth) - Ui.Px(PagePadding) * 2,
                 ClientSize.Height - Ui.Px(CaptionHeight) - Ui.Px(22));
 
-            _content = new Panel();
-            _content.SetBounds(Ui.Px(SidebarWidth) + Ui.Px(PagePadding), Ui.Px(CaptionHeight), area.Width, area.Height);
+            // The panel that actually scrolls is made wider than the frame holding it, so its
+            // own grey scrollbar sits outside the visible area and is clipped away. Windows
+            // still does the scrolling - wheel, keyboard and touchpad all behave as they should
+            // - and a themed bar is drawn over the edge in its place.
+            _clip = new Panel();
+            _clip.SetBounds(Ui.Px(SidebarWidth) + Ui.Px(PagePadding), Ui.Px(CaptionHeight),
+                area.Width, area.Height);
+            _clip.BackColor = Theme.Current.Window;
+
+            _content = new ScrollHost();
+            _content.SetBounds(0, 0, area.Width + SystemInformation.VerticalScrollBarWidth, area.Height);
             _content.BackColor = Theme.Current.Window;
 
             // Only ever needed by the Displays page, and only when several displays are attached:
-            // a page that is no taller than the panel shows no scrollbar at all.
+            // a page that is no taller than the panel scrolls nowhere and shows no bar at all.
             _content.AutoScroll = true;
+            _content.Moved += delegate { ShowScrollPosition(); };
+
+            _scroller = new Scroller();
+            _scroller.SetBounds(area.Width - Ui.Px(ScrollerWidth + 2), 0, Ui.Px(ScrollerWidth), area.Height);
+            _scroller.Scrolled += delegate
+            {
+                _content.AutoScrollPosition = new Point(0, _scroller.Offset);
+            };
 
             _pages.Add(new BehaviourPage(this, area));
             _pages.Add(new DisplaysPage(this, area));
@@ -141,7 +163,11 @@ namespace Dimly
                 _content.Controls.Add(page);
             }
 
-            Controls.Add(_content);
+            _clip.Controls.Add(_content);
+            _clip.Controls.Add(_scroller);
+            _scroller.BringToFront();
+
+            Controls.Add(_clip);
             Controls.Add(_caption);
             Controls.Add(_sidebar);
 
@@ -242,6 +268,14 @@ namespace Dimly
             Native.SendMessage(Handle, Native.WM_NCLBUTTONDOWN, (IntPtr)Native.HTCAPTION, IntPtr.Zero);
         }
 
+        /// <summary>Points the themed bar at wherever the panel has actually scrolled to.</summary>
+        private void ShowScrollPosition()
+        {
+            int total = _active == null ? 0 : _active.Height;
+            _scroller.Describe(total, _clip.Height, -_content.AutoScrollPosition.Y);
+            _scroller.Visible = total > _clip.Height;
+        }
+
         private void ShowPage(Page page)
         {
             if (_active == page) return;
@@ -249,6 +283,8 @@ namespace Dimly
             _active = page;
             _active.Visible = true;
             _active.OnWindowShown();
+            _content.AutoScrollPosition = Point.Empty;
+            ShowScrollPosition();
             _caption.Title = page.Title;
             _caption.Invalidate();
             _sidebar.Select(_pages.IndexOf(page));
@@ -264,6 +300,8 @@ namespace Dimly
         {
             BackColor = Theme.Current.Window;
             _content.BackColor = Theme.Current.Window;
+            _clip.BackColor = Theme.Current.Window;
+            _scroller.Invalidate();
             _sidebar.OnThemeChanged();
             _caption.OnThemeChanged();
             foreach (Page page in _pages) page.OnThemeChanged();
@@ -659,6 +697,29 @@ namespace Dimly
         /// A page of cards. The window cannot be resized, so every position is absolute -
         /// design units in, device pixels out, no anchoring to go wrong.
         /// </summary>
+        /// <summary>
+        /// The scrolling panel, made to say so. Windows moves it for the wheel, the keyboard and
+        /// the scrollbar through different messages, and none of them raises one event covering
+        /// all three, so the messages themselves are watched.
+        /// </summary>
+        private sealed class ScrollHost : Panel
+        {
+            private const int WM_VSCROLL = 0x0115;
+            private const int WM_MOUSEWHEEL = 0x020A;
+            private const int WM_KEYDOWN = 0x0100;
+
+            public event EventHandler Moved;
+
+            protected override void WndProc(ref Message m)
+            {
+                base.WndProc(ref m);
+                if (m.Msg != WM_VSCROLL && m.Msg != WM_MOUSEWHEEL && m.Msg != WM_KEYDOWN) return;
+
+                EventHandler handler = Moved;
+                if (handler != null) handler(this, EventArgs.Empty);
+            }
+        }
+
         private abstract class Page : ThemedControl
         {
             private int _cursor;
@@ -1127,7 +1188,7 @@ namespace Dimly
                 if (targets.Count == 0) needed += 112;
 
                 Width = Ui.Px(needed) > Area.Height
-                    ? Area.Width - SystemInformation.VerticalScrollBarWidth
+                    ? Area.Width - Ui.Px(ScrollerWidth + 8)
                     : Area.Width;
 
                 foreach (DisplayTarget target in targets) BuildDisplay(target);

@@ -447,6 +447,134 @@ namespace Dimly
         }
     }
 
+    // ---------------------------------------------------------------- scroller
+
+    /// <summary>
+    /// A slim scrollbar drawn in the theme's own colours. Windows' scrollbar cannot be
+    /// coloured, and one grey bar in a window where every other control is drawn by hand looks
+    /// like a mistake. The panel behind this still does the scrolling - the wheel, the keyboard
+    /// and the touchpad all keep working - and its own bar is simply kept out of sight.
+    /// </summary>
+    public sealed class Scroller : ThemedControl
+    {
+        /// <summary>Short enough to stay usable on a long page, long enough to grab.</summary>
+        private const int MinimumThumb = 28;
+
+        private int _total;
+        private int _viewport;
+        private int _offset;
+        private bool _hover;
+        private bool _dragging;
+        private int _grab;
+
+        public Scroller()
+        {
+            Cursor = Cursors.Default;
+        }
+
+        /// <summary>Raised when the user moves it. <see cref="Offset"/> holds the new position.</summary>
+        public event EventHandler Scrolled;
+
+        public int Offset { get { return _offset; } }
+
+        /// <summary>Tells the bar how much there is, how much fits, and where it is now.</summary>
+        public void Describe(int total, int viewport, int offset)
+        {
+            _total = Math.Max(0, total);
+            _viewport = Math.Max(1, viewport);
+            _offset = Clamp(offset);
+            Invalidate();
+        }
+
+        private int Hidden { get { return Math.Max(0, _total - _viewport); } }
+
+        private int Clamp(int offset)
+        {
+            return Math.Max(0, Math.Min(Hidden, offset));
+        }
+
+        private int ThumbHeight
+        {
+            get
+            {
+                if (_total <= _viewport) return Height;
+                int ideal = (int)((long)Height * _viewport / _total);
+                return Math.Max(Ui.Px(MinimumThumb), Math.Min(Height, ideal));
+            }
+        }
+
+        private int ThumbTop
+        {
+            get
+            {
+                int room = Height - ThumbHeight;
+                return Hidden == 0 ? 0 : (int)((long)room * _offset / Hidden);
+            }
+        }
+
+        private void MoveTo(int offset)
+        {
+            offset = Clamp(offset);
+            if (offset == _offset) return;
+            _offset = offset;
+            Invalidate();
+
+            EventHandler handler = Scrolled;
+            if (handler != null) handler(this, EventArgs.Empty);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left || Hidden == 0) return;
+
+            int top = ThumbTop;
+            int height = ThumbHeight;
+            if (e.Y >= top && e.Y < top + height)
+            {
+                _dragging = true;
+                _grab = e.Y - top;
+                return;
+            }
+
+            // Clicking the groove moves a screenful towards the pointer, as a scrollbar does.
+            MoveTo(_offset + (e.Y < top ? -_viewport : _viewport));
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (!_dragging) return;
+
+            int room = Height - ThumbHeight;
+            if (room <= 0) return;
+            MoveTo((int)((long)(e.Y - _grab) * Hidden / room));
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            _dragging = false;
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _hover = true; Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hover = false; Invalidate(); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            if (Hidden == 0) return;
+
+            Graphics g = e.Graphics;
+            Ui.Quality(g);
+
+            float radius = Width / 2f;
+            Ui.FillRound(g, T.Track, new RectangleF(0, 0, Width, Height), radius);
+
+            Color thumb = _dragging || _hover ? T.Accent : Ui.Mix(T.Track, T.Text, 0.30);
+            Ui.FillRound(g, thumb, new RectangleF(0, ThumbTop, Width, ThumbHeight), radius);
+        }
+    }
+
     // --------------------------------------------------------------- segmented
 
     /// <summary>A row of mutually exclusive choices - the delay presets, the fade speeds.</summary>

@@ -62,7 +62,7 @@
 
 ### Changed
 
-- **Half the size of 1.0, despite everything above**: 374 KB to 184 KB. The icon was embedded
+- **Half the size of 1.0, despite everything above**: 374 KB to 187 KB. The icon was embedded
   twice — once as the Win32 resource Windows uses for the file, and again as a managed
   resource for the app to read — so Dimly now reads the Win32 copy it already carries. The
   large icon frames are also PNG-compressed, which halved the icon itself; a single 128px
@@ -72,6 +72,10 @@
   across the machine is the most heuristic-tripping thing a small unsigned utility can do.
   Dimly now has Windows post notifications to one private window, and only ever looks at which
   kind of device sent them — never at what was typed.
+- **The scrollbar is drawn in the theme.** Windows' own bar cannot be coloured, and one grey
+  strip in a window where every other control is drawn by hand looked like a mistake. The panel
+  behind it still does the scrolling - wheel, keyboard and touchpad all behave exactly as
+  before - and its bar is simply kept out of sight.
 - Closing the window explains, once, that Dimly is still in the tray. Silently vanishing is
   the most common way a tray app loses a user.
 - Rescanning displays says that it is scanning, and a button that cannot be pressed now looks
