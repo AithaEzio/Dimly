@@ -1,6 +1,6 @@
 # Dimly v1.1
 
-A single 187 KB executable. No installer, no runtime to fetch, no service, nothing written
+A single 194 KB executable. No installer, no runtime to fetch, no service, nothing written
 outside `%AppData%\Dimly`.
 
 ---
@@ -50,10 +50,14 @@ come back.
   click-through overlay only where neither is offered.
 - **Multiple monitors**, each with its own settings.
 - **Survives the screen being switched off** by Windows' display timeout, which otherwise
-  leaves a monitor awake and stuck dim.
+  leaves a monitor awake and stuck dim. **Smart restore** goes further: it looks the displays
+  over before handing the brightness back — waiting first for the monitors to actually leave
+  power save — and holds the dim through all of it even if you are already back.
 - **Three themes**, and a tray icon that stays out of the way.
-- **Costs almost nothing to run:** 5.4 MB and 0 ms of CPU across 40 seconds idle. Closing the
-  settings window hands its memory back — 45 MB down to under 4 MB.
+- **Costs almost nothing to run:** measurably nothing allocated while it sits watching, and its
+  memory is handed back to Windows once you have gone — around 1–3 MB while away, against 13 MB
+  and climbing if it held on to it. Closing the settings window hands that back too: 45 MB down
+  to under 4 MB.
 
 ## New in 1.1
 
@@ -62,6 +66,11 @@ come back.
   slider that moves it, the dim switch, Auto restore, the restore level, and
   **Use current brightness**.
 - **A restore level per display**, replacing the single shared one.
+- **Smart restore**, on by default — when Windows switches the screen off, Dimly waits for the
+  monitors to actually come out of power save (Windows calls the screen on seconds before they
+  do), checks the displays over, and only then hands the brightness back. The dim is held
+  through all of it, so the brightness returns once rather than being written into a monitor
+  that is still dark.
 - **Never dim while media is playing.**
 - **Ignore devices that keep the PC awake.**
 - Version information in the executable, so Explorer's tooltip and Properties → Details are
@@ -74,7 +83,12 @@ come back.
 - A screen left dim after the display slept, and stayed stuck dim even on quit.
 - With the Displays page open, the app said "Dimmed" while every screen stayed bright.
 - The brightness shown on the Displays page could be stale.
-- A monitor that dropped a single DDC/CI query was treated as having no answer.
+- A monitor that dropped a single DDC/CI query was treated as having no answer, and one that
+  dropped a reading made the live brightness on the Displays page flicker.
+- The mouse wheel did nothing when the pointer was over the scrollbar itself.
+- A window dragged off the edge of the desktop could not be brought back, because it has no
+  title bar for Windows to move it by.
+- Quitting or signing out while Dimly was checking the displays left the screens dimmed.
 - Launching Dimly while it was already running did nothing instead of showing the window.
 - The "Dimly is still running" tray hint never appeared.
 - A maximised window was mistaken for a fullscreen one, which blocked dimming indefinitely.
@@ -85,9 +99,24 @@ Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 ## Changed
 
-- **Half the size of 1.0 despite all of the above:** 374 KB → 187 KB.
+- **Half the size of 1.0 despite all of the above:** 374 KB → 194 KB.
+- **Re-establishing the displays is around sixty times faster** — 62 ms down to under 1 ms, and
+  no longer growing with the number of monitors. Nearly all of it was one redundant question
+  put to each monitor over DDC/CI; the write that follows is read back and retried until the
+  display agrees, so asking beforehand proved nothing. This matters now that the check runs
+  every time the screen switches off.
+- **A rescan keeps the displays it already has** when the same monitors are attached in the
+  same places, so overlays, per-display settings and captured levels all survive. Plugging a
+  monitor in or out still rebuilds everything, and **Rescan** always does a full re-probe.
 - **The scrollbar is drawn in the theme** rather than left as Windows' grey one — the
   panel behind it still does the scrolling, so the wheel and keyboard behave as before.
+- **The mouse wheel no longer moves a slider.** Scrolling with the pointer over one used to
+  change the brightness; it now scrolls the page, as expected. Arrow keys still move sliders.
+- **Dimly hands its memory back to Windows once you have gone** — a few seconds after the
+  screen dims, and again the moment Windows switches the screen off, which are the two moments
+  nothing can be waiting on it. And the window now repaints only when something has actually
+  changed rather than once a second regardless, which halves what the app accumulates while it
+  is open.
 - Activity is read through **Raw Input instead of a low-level keyboard hook** — the API every
   keylogger reaches for, and the most heuristic-tripping thing a small unsigned utility can do.
   Dimly only ever looks at which *kind* of device sent an event, never at what was typed.
@@ -104,7 +133,7 @@ Full detail in [CHANGELOG.md](CHANGELOG.md).
 
 The executable is unsigned, so SmartScreen shows **"Windows protected your PC"** the first
 time. Choose **More info → Run anyway**. A code-signing certificate costs a few hundred pounds
-a year, which is hard to justify for a free 187 KB utility.
+a year, which is hard to justify for a free 194 KB utility.
 
 A handful of antivirus engines flag it on machine-learning heuristics rather than signatures —
 3 of 60 on VirusTotal, with every signature-based engine clean. The README explains what those
@@ -116,10 +145,14 @@ verdicts are and how to verify the build yourself.
 Get-FileHash .\Dimly.exe -Algorithm SHA256
 ```
 
-`Dimly.exe` — 190,976 bytes
+This checks that the file you downloaded is the file published here. Building from source will
+*not* reproduce this hash — the C# 5 compiler stamps a build time and a fresh module GUID into
+every build, so two builds of identical source differ in 46 bytes.
+
+`Dimly.exe` — 198,144 bytes
 
 ```
-SHA-256  b0fe46d2c5035d8ad05b2e7310739e283675753c6b5c3a06f2cc47e836d003fa
+SHA-256  296c17c33f9bd7f9a34cc215071398ddf864c086d695aa2214080c38dc9cfe70
 ```
 
 ---

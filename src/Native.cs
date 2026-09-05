@@ -295,6 +295,64 @@ namespace Dimly
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool UnregisterPowerSettingNotification(IntPtr registration);
 
+        private static readonly Guid GUID_VIDEO_SUBGROUP =
+            new Guid("7516b95f-f776-4464-8c53-06167f40cc99");
+        private static readonly Guid GUID_VIDEO_POWERDOWN_TIMEOUT =
+            new Guid("3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e");
+
+        [DllImport("powrprof.dll")]
+        private static extern uint PowerGetActiveScheme(IntPtr userRoot, out IntPtr scheme);
+
+        [DllImport("powrprof.dll")]
+        private static extern uint PowerReadACValueIndex(IntPtr userRoot, IntPtr scheme,
+            ref Guid subGroup, ref Guid setting, out uint value);
+
+        [DllImport("powrprof.dll")]
+        private static extern uint PowerReadDCValueIndex(IntPtr userRoot, IntPtr scheme,
+            ref Guid subGroup, ref Guid setting, out uint value);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr LocalFree(IntPtr memory);
+
+        /// <summary>
+        /// How long Windows waits before switching the screen off, in seconds, under the power
+        /// plan in use. Zero means never; -1 means Windows would not say. Read from the plan
+        /// rather than assumed, so the setting can be reported back to the user as it stands.
+        /// </summary>
+        public static int ScreenOffSeconds()
+        {
+            IntPtr scheme;
+            try
+            {
+                if (PowerGetActiveScheme(IntPtr.Zero, out scheme) != 0) return -1;
+            }
+            catch (DllNotFoundException) { return -1; }
+            catch (EntryPointNotFoundException) { return -1; }
+
+            try
+            {
+                Guid group = GUID_VIDEO_SUBGROUP;
+                Guid setting = GUID_VIDEO_POWERDOWN_TIMEOUT;
+
+                uint onPower, onBattery;
+                bool haveAc = PowerReadACValueIndex(IntPtr.Zero, scheme, ref group, ref setting, out onPower) == 0;
+                bool haveDc = PowerReadDCValueIndex(IntPtr.Zero, scheme, ref group, ref setting, out onBattery) == 0;
+                if (!haveAc && !haveDc) return -1;
+
+                // Whichever plan is in force, the screen switching off at all is what matters,
+                // so the shorter of the two that is actually set is reported.
+                int ac = haveAc ? (int)onPower : 0;
+                int dc = haveDc ? (int)onBattery : 0;
+                if (ac == 0) return dc;
+                if (dc == 0) return ac;
+                return Math.Min(ac, dc);
+            }
+            finally
+            {
+                LocalFree(scheme);
+            }
+        }
+
         public const int WM_NCLBUTTONDOWN = 0x00A1;
         public const int HTCAPTION = 2;
 

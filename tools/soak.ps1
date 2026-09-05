@@ -119,6 +119,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'dist\Dimly.exe'
 $settings = Join-Path $env:APPDATA 'Dimly\settings.ini'
 
+. (Join-Path $PSScriptRoot 'common.ps1')
+Protect-DimlySettings
+Wake-Screen
+
 $baseline = -1
 for ($try = 0; $try -lt 8 -and $baseline -lt 0; $try++) {
     $baseline = [Soak]::Read()
@@ -229,5 +233,5 @@ finally {
     Get-Process -Name Dimly -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Milliseconds 500
     if ([Soak]::Read() -lt ($baseline - 3)) { [Soak]::Write($baseline) }
-    if (Test-Path $settings) { Remove-Item $settings }
+    Restore-DimlySettings
 }

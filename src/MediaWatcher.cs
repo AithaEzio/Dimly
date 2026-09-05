@@ -163,6 +163,10 @@ namespace Dimly
             return loudest;
         }
 
+        /// <summary>Looked up once. Type.GUID reads an attribute back through reflection, and
+        /// this is asked for once per audio endpoint on every single sample.</summary>
+        private static readonly Guid AudioSessionManagerId = typeof(IAudioSessionManager2).GUID;
+
         private static float LoudestOn(IMMDevice device)
         {
             object managerObject = null;
@@ -171,7 +175,7 @@ namespace Dimly
 
             try
             {
-                Guid managerId = typeof(IAudioSessionManager2).GUID;
+                Guid managerId = AudioSessionManagerId;
                 if (device.Activate(ref managerId, ClsCtxAll, IntPtr.Zero, out managerObject) != 0) return 0f;
 
                 IAudioSessionManager2 manager = (IAudioSessionManager2)managerObject;

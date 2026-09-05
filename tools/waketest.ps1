@@ -89,6 +89,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'dist\Dimly.exe'
 $settings = Join-Path $env:APPDATA 'Dimly\settings.ini'
 
+. (Join-Path $PSScriptRoot 'common.ps1')
+Protect-DimlySettings
+Wake-Screen
+
 function Settle {
     for ($i = 0; $i -lt 10; $i++) {
         $v = [Wake]::Read()
@@ -186,5 +190,5 @@ finally {
         Write-Host "Putting brightness back to $baseline% ..." -ForegroundColor Yellow
         [Wake]::Write($baseline)
     }
-    if (Test-Path $settings) { Remove-Item $settings }
+    Restore-DimlySettings
 }

@@ -175,9 +175,10 @@ namespace Dimly
 
             _statusTimer = new Timer();
             _statusTimer.Interval = 1000;
-            _statusTimer.Tick += delegate { _sidebar.Invalidate(); };
+            _statusTimer.Tick += delegate { _sidebar.RefreshStatus(); };
 
             _engine.Changed += OnEngineChanged;
+            _engine.DisplaysChanged += OnDisplaysChanged;
             Theme.CurrentChanged += OnThemeChanged;
         }
 
@@ -296,6 +297,11 @@ namespace Dimly
             foreach (Page page in _pages) page.OnEngineChanged();
         }
 
+        private void OnDisplaysChanged(object sender, EventArgs e)
+        {
+            foreach (Page page in _pages) page.OnDisplaysChanged();
+        }
+
         private void OnThemeChanged(object sender, EventArgs e)
         {
             BackColor = Theme.Current.Window;
@@ -313,8 +319,29 @@ namespace Dimly
         {
             if (!Visible) Show();
             if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            BringBackOnScreen();
             Activate();
             BringToFront();
+        }
+
+        /// <summary>
+        /// Puts a window that has ended up somewhere unreachable back in the middle of the
+        /// screen. This one has no title bar and is dragged by its own caption strip, so a
+        /// window pushed off the edge of the desktop - or left on a monitor that has since been
+        /// unplugged - cannot be dragged back by any means Windows offers.
+        /// </summary>
+        private void BringBackOnScreen()
+        {
+            foreach (Screen screen in Screen.AllScreens)
+            {
+                Rectangle showing = Rectangle.Intersect(screen.WorkingArea, Bounds);
+
+                // Enough of it visible to take hold of: the caption strip is what drags it.
+                if (showing.Width >= Ui.Px(240) && showing.Height >= Ui.Px(CaptionHeight)) return;
+            }
+
+            Rectangle area = Screen.PrimaryScreen.WorkingArea;
+            Location = new Point(area.X + (area.Width - Width) / 2, area.Y + (area.Height - Height) / 2);
         }
 
         protected override void Dispose(bool disposing)
@@ -322,6 +349,7 @@ namespace Dimly
             if (disposing)
             {
                 _engine.Changed -= OnEngineChanged;
+                _engine.DisplaysChanged -= OnDisplaysChanged;
                 Theme.CurrentChanged -= OnThemeChanged;
                 _statusTimer.Dispose();
             }
@@ -436,16 +464,40 @@ namespace Dimly
                 PaintStatus(g);
             }
 
+            /// <summary>What the status line last said, so it is only redrawn when it changes.</summary>
+            private string _headline;
+            private string _detail;
+            private Color _dot;
+
+            /// <summary>
+            /// Asks whether the status line still says what is already on screen, and repaints
+            /// only if it does not. The window asks once a second, and for nearly all of those
+            /// seconds nothing has changed - "Paused", "Dimmed", "Media playing" all sit still
+            /// for minutes at a time. Repainting anyway redraws the whole panel, logo included,
+            /// for no visible difference whatsoever.
+            /// </summary>
+            public void RefreshStatus()
+            {
+                string headline, detail;
+                Color dot;
+                DescribeStatus(out headline, out detail, out dot);
+
+                if (headline == _headline && detail == _detail && dot == _dot) return;
+                Invalidate();
+            }
+
             /// <summary>The live answer to "is it about to dim, and why not?"</summary>
-            private void PaintStatus(Graphics g)
+            private void DescribeStatus(out string headline, out string detail, out Color dot)
             {
                 DimEngine engine = _shell.Engine;
 
-                string headline;
-                string detail;
-                Color dot;
-
-                if (engine.Paused)
+                if (engine.AwaitingRescan)
+                {
+                    headline = "Checking displays";
+                    detail = "Waiting for the monitors to wake up";
+                    dot = T.AccentAlt;
+                }
+                else if (engine.Paused)
                 {
                     headline = "Paused";
                     detail = "Dimming is switched off";
@@ -476,6 +528,19 @@ namespace Dimly
                     detail = remaining > 0 ? "Dims in " + remaining + "s" : "Dimming now";
                     dot = T.Accent;
                 }
+            }
+
+            private void PaintStatus(Graphics g)
+            {
+                string headline, detail;
+                Color dot;
+                DescribeStatus(out headline, out detail, out dot);
+
+                // Whatever brought us here, the panel now shows this. Remembering it is what
+                // lets the once-a-second check know there is nothing to redraw.
+                _headline = headline;
+                _detail = detail;
+                _dot = dot;
 
                 int top = Height - Ui.Px(124);
                 float size = Ui.Px(8);
@@ -694,10 +759,6 @@ namespace Dimly
         // ---------------------------------------------------------------- pages
 
         /// <summary>
-        /// A page of cards. The window cannot be resized, so every position is absolute -
-        /// design units in, device pixels out, no anchoring to go wrong.
-        /// </summary>
-        /// <summary>
         /// The scrolling panel, made to say so. Windows moves it for the wheel, the keyboard and
         /// the scrollbar through different messages, and none of them raises one event covering
         /// all three, so the messages themselves are watched.
@@ -720,6 +781,10 @@ namespace Dimly
             }
         }
 
+        /// <summary>
+        /// A page of cards. The window cannot be resized, so every position is absolute -
+        /// design units in, device pixels out, no anchoring to go wrong.
+        /// </summary>
         private abstract class Page : ThemedControl
         {
             private int _cursor;
@@ -747,6 +812,7 @@ namespace Dimly
 
             public virtual void OnWindowShown() { }
             public virtual void OnEngineChanged() { }
+            public virtual void OnDisplaysChanged() { }
 
             /// <summary>Adds a card below the previous one. Heights are in design units.</summary>
             protected Card AddCard(string heading, int designHeight)
@@ -996,12 +1062,6 @@ namespace Dimly
         /// back. Levels are read and written through the engine's queue, so the window never
         /// talks to a monitor while the engine is mid-fade.
         /// </summary>
-        /// <summary>
-        /// The brightness of every attached display in one place: what each one is set to now,
-        /// whether Dimly should dim it, and where to leave it if its own level cannot be put
-        /// back. Levels are read and written through the engine's queue, so the window never
-        /// talks to a monitor while the engine is mid-fade.
-        /// </summary>
         private sealed class DisplaysPage : Page
         {
             /// <summary>A display Dimly can actually set, so it gets both sliders.</summary>
@@ -1011,6 +1071,9 @@ namespace Dimly
             private const int OverlayCard = 156;
 
             private const int NoticeCard = 96;
+
+            /// <summary>The Smart restore switch, and the line reporting Windows' own setting.</summary>
+            private const int SmartCard = 106;
 
             /// <summary>
             /// Dragging writes at this rate rather than on every pixel: a monitor takes tens of
@@ -1031,6 +1094,16 @@ namespace Dimly
             /// showing: reading a monitor is real I/O, and the window is usually closed.
             /// </summary>
             private const int PollMilliseconds = 1500;
+
+            /// <summary>
+            /// How many readings in a row a display may decline before the level shown for it is
+            /// given up on. A monitor answers over a slow serial link and drops the occasional
+            /// query - one here answers about four times in ten - so blanking the reading on a
+            /// single refusal makes a perfectly good display flicker between a number and "not
+            /// reported" every second and a half. The last thing it said is still the best
+            /// answer there is until it has gone properly quiet.
+            /// </summary>
+            private const int AllowedMisses = 3;
 
             /// <summary>Room set aside on the right of the fallback line for its button.</summary>
             private const int UseCurrentWidth = 200;
@@ -1125,6 +1198,9 @@ namespace Dimly
                 /// the query that found it, and then refuse the next one.</summary>
                 public bool Known;
 
+                /// <summary>Readings this display has declined in a row. See AllowedMisses.</summary>
+                public int Misses;
+
                 /// <summary>
                 /// Says only what the display has said. A refused reading is reported as one,
                 /// never drawn as a slider resting at zero, and the explanation underneath
@@ -1132,16 +1208,14 @@ namespace Dimly
                 /// </summary>
                 public void ShowBrightness()
                 {
-                    BrightnessValue.Text = Known ? Brightness.Value + " %"
-                                         : Answered ? "not reported" : "reading";
-                    BrightnessValue.Invalidate();
+                    Retitle(BrightnessValue, Known ? Brightness.Value + " %"
+                                            : Answered ? "not reported" : "reading");
 
-                    BrightnessNote.Text = Known
+                    Retitle(BrightnessNote, Known
                         ? "What this screen is set to right now. Moving it counts as you being at the desk."
                         : Answered
                             ? "This display will not say what it is set to, so there is nothing to move here."
-                            : "Asking the display what it is set to...";
-                    BrightnessNote.Invalidate();
+                            : "Asking the display what it is set to...");
 
                     Brightness.Enabled = Known;
                     UseCurrent.Enabled = Known;
@@ -1149,8 +1223,20 @@ namespace Dimly
 
                 public void ShowFallback()
                 {
-                    FallbackValue.Text = Fallback.Value + " %";
-                    FallbackValue.Invalidate();
+                    Retitle(FallbackValue, Fallback.Value + " %");
+                }
+
+                /// <summary>
+                /// Sets a caption's text, and repaints only if it actually changed. These are
+                /// asked to show themselves every time a level is read - once every second and a
+                /// half, for as long as the page is open - and a reading that says the same thing
+                /// as the last one has nothing to redraw.
+                /// </summary>
+                private static void Retitle(Caption caption, string text)
+                {
+                    if (caption.Text == text) return;
+                    caption.Text = text;
+                    caption.Invalidate();
                 }
 
                 /// <summary>
@@ -1162,8 +1248,7 @@ namespace Dimly
                 {
                     bool automatic = Auto.Checked;
 
-                    RestoreHeading.Text = automatic ? "Restore to" : "If restoring fails";
-                    RestoreHeading.Invalidate();
+                    Retitle(RestoreHeading, automatic ? "Restore to" : "If restoring fails");
 
                     AutoRow.Description = automatic
                         ? "Puts this display back to the level below, without reading the screen first."
@@ -1182,7 +1267,7 @@ namespace Dimly
 
                 // Decide the width before making anything: if the cards will not fit, the panel
                 // grows a scrollbar, and cards drawn at the full width would slide under it.
-                int needed = NoticeCard + 16;
+                int needed = NoticeCard + SmartCard + 32;
                 foreach (DisplayTarget target in targets)
                     needed += (target.Kind == BrightnessKind.Overlay ? OverlayCard : ControllableCard) + 16;
                 if (targets.Count == 0) needed += 112;
@@ -1200,6 +1285,7 @@ namespace Dimly
                         20, 46, 20);
                 }
 
+                BuildSmartRestore();
                 BuildNotice();
                 SizeToContent();
 
@@ -1330,6 +1416,51 @@ namespace Dimly
                 return value;
             }
 
+            /// <summary>
+            /// Smart restore, and what Windows is actually set to do. The switch only ever has
+            /// an effect after Windows switches the screen off, so the setting that decides
+            /// whether that happens at all is worth saying out loud rather than leaving the
+            /// user to wonder why nothing seems to happen.
+            /// </summary>
+            private void BuildSmartRestore()
+            {
+                Card card = AddCard(null, SmartCard);
+
+                ToggleSwitch smart = new ToggleSwitch();
+                smart.SetCheckedSilently(Shell.Settings.SmartRestore);
+                smart.CheckedChanged += delegate
+                {
+                    Shell.Settings.SmartRestore = smart.Checked;
+                    Shell.Persist();
+                };
+                Row(card, "Smart restore",
+                    "Check the displays over before handing the brightness back.", smart, 14);
+
+                Caption note = new Caption(WindowsScreenOff(), 8.5f, FontStyle.Regular, Tone.Muted);
+                note.Wrap = true;
+                note.SetBounds(Ui.Px(20), Ui.Px(68), card.Width - Ui.Px(40), Ui.Px(30));
+                card.Controls.Add(note);
+            }
+
+            /// <summary>Reports Windows' own display timeout, which is what starts all of this.</summary>
+            private static string WindowsScreenOff()
+            {
+                int seconds = Native.ScreenOffSeconds();
+
+                if (seconds < 0)
+                    return "This runs after Windows switches the screen off, and only then.";
+                if (seconds == 0)
+                    return "Windows is not set to switch the screen off, so this will not run "
+                         + "unless something else switches it off.";
+
+                int minutes = seconds / 60;
+                string after = minutes >= 1
+                    ? minutes + (minutes == 1 ? " minute" : " minutes")
+                    : seconds + " seconds";
+                return "Windows switches the screen off after " + after + ". This runs when it "
+                     + "comes back on, and only then.";
+            }
+
             private void BuildNotice()
             {
                 Card card = AddCard(null, NoticeCard);
@@ -1377,6 +1508,7 @@ namespace Dimly
                 _pending = null;
                 Shell.Engine.SetBrightness(panel.Target, panel.Brightness.Value);
                 panel.Known = true;
+                panel.Misses = 0;
                 _settledAtTick = unchecked(Environment.TickCount + SettleMilliseconds);
             }
 
@@ -1403,10 +1535,20 @@ namespace Dimly
 
                 foreach (DisplayPanel panel in _panels)
                 {
-                    int level;
                     panel.Answered = true;
-                    panel.Known = levels.TryGetValue(panel.Target.Key, out level);
-                    if (panel.Known) panel.Brightness.SetValueSilently(level);
+
+                    int level;
+                    if (levels.TryGetValue(panel.Target.Key, out level))
+                    {
+                        panel.Misses = 0;
+                        panel.Known = true;
+                        panel.Brightness.SetValueSilently(level);
+                    }
+                    else if (!panel.Known || ++panel.Misses >= AllowedMisses)
+                    {
+                        panel.Known = false;
+                    }
+
                     panel.ShowBrightness();
                 }
             }
@@ -1429,6 +1571,16 @@ namespace Dimly
             public override void OnEngineChanged()
             {
                 if (Visible) RefreshLevels();
+            }
+
+            /// <summary>
+            /// The displays themselves were replaced, so every card is holding a target that no
+            /// longer exists. Drawn again from the new list.
+            /// </summary>
+            public override void OnDisplaysChanged()
+            {
+                _builtFor = -1;
+                Build();
             }
         }
 

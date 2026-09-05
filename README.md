@@ -13,7 +13,7 @@ One file. No installer, no runtime download, no background service.
 ![Platform](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
 ![Framework](https://img.shields.io/badge/.NET%20Framework-4.8-512BD4)
 ![Version](https://img.shields.io/badge/version-1.1-6E8CFF)
-![Size](https://img.shields.io/badge/size-187%20KB-brightgreen)
+![Size](https://img.shields.io/badge/size-194%20KB-brightgreen)
 ![Licence](https://img.shields.io/badge/licence-MIT-blue)
 
 <img src="assets/preview/ui-away.png" width="820" alt="Dimly's Away &amp; dimming page">
@@ -26,7 +26,7 @@ One file. No installer, no runtime download, no background service.
 
 Walking away from a bright monitor wastes power and burns backlight hours, and every "dimmer"
 utility either needs an installer, drags in a runtime, or just throws a black sheet over the
-screen. Dimly is a single 187 KB executable that turns the *actual* backlight down and brings
+screen. Dimly is a single 194 KB executable that turns the *actual* backlight down and brings
 it back when you sit down again.
 
 ## Features
@@ -56,12 +56,19 @@ it back when you sit down again.
   own settings — verified dimming and restoring two monitors together.
 - **Survives the screen being switched off.** When Windows' display timeout blanks a dimmed
   screen, Dimly notices it coming back and puts the brightness right — the case where a monitor
-  otherwise wakes up stuck dim.
+  otherwise wakes up stuck dim. **Smart restore** goes further: Windows calls the screen on
+  seconds before a monitor has left power save, so it waits for the monitors to actually answer,
+  then looks the displays over, and only then hands the brightness back — holding the dim
+  through all of it even if you are already back, so the brightness returns once and correctly
+  rather than being written into a dark monitor.
 - **Laptops and desktops.** Internal panels and external monitors both work.
-- **Costs almost nothing to run:** measured at **5.4 MB of memory and 0 ms of CPU across 40
-  seconds idle**. With media detection on it is 11.7 MB and 16 ms per 40 s — 0.04% of one core —
-  because using the Windows audio APIs pulls the audio stack into the process. Closing the
-  settings window hands its memory straight back: 45 MB down to under 4 MB.
+- **Costs almost nothing to run:** watching for you to leave allocates **nothing at all** —
+  measured over five minutes, zero bytes a minute with media detection off, and around 30 KB a
+  minute with it on. Its memory is handed back to Windows once you have gone: about **1–3 MB**
+  across a ten-minute away period, where holding on to it would climb past 30 MB. Media
+  detection costs about 6 MB while it is on, because using the Windows audio APIs pulls the
+  audio stack into the process. Closing the settings window hands that memory straight back
+  too: 45 MB down to under 4 MB.
 - **Three themes**, a proper settings window, and a tray icon that stays out of the way.
 - **No installer, no runtime to fetch, no background service, nothing written outside
   `%AppData%\Dimly`.**
@@ -169,6 +176,15 @@ will never brighten a screen you deliberately turned down.
   **Use current brightness** to copy the level above into it - making what is on screen now
   the level to come back to.
 
+**Smart restore** sits below the display cards and applies to all of them. With it on, a screen
+that Windows switched off is checked over when it comes back — the displays are re-established
+before the brightness is handed back, and the dim is held through that check even if you are
+already back at the desk, so the brightness returns once rather than being written, contradicted
+by a monitor that was still waking up, and written again. It runs only after the screen has been
+switched off; every other wake follows the ordinary path whether the switch is on or not. The
+card also reports what Windows itself is set to do, because a machine that never switches the
+screen off will never see this run.
+
 Every control carries a line saying what it does, in the same way as the other pages.
 
 A monitor that offers no brightness control Dimly can reach says so, and is dimmed with an
@@ -231,7 +247,9 @@ What Dimly does so that it has as little as possible to be suspicious about:
 - **A real version resource and an explicit manifest**, requesting `asInvoker` — Dimly never
   asks for administrator rights.
 - **One command to build it yourself**, from source you can read, with `build.ps1` printing a
-  SHA-256 you can compare against whatever you downloaded.
+  SHA-256 of what it produced. Publish that hash beside a release and anyone can check that the
+  file they downloaded is the file that was published — see
+  [Verifying a build](#verifying-a-build) for what that does and does not prove.
 
 ## How "media is playing" is decided
 
@@ -297,12 +315,12 @@ that ships with it, so there is no SDK, no NuGet restore and no project file.
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-The result is `dist/Dimly.exe`, about 187 KB, with the icon and the version resource embedded. Add `-Run` to launch it
+The result is `dist/Dimly.exe`, about 194 KB, with the icon and the version resource embedded. Add `-Run` to launch it
 straight after building. The icon itself is generated from code by
 `tools/make-icon.ps1` — there are no binary art assets to trust.
 
 Targeting Framework 4.8 rather than .NET 8 is a deliberate trade: it is what makes a genuinely
-single-file, install-free 187 KB executable possible, where a modern .NET build would be either
+single-file, install-free 194 KB executable possible, where a modern .NET build would be either
 a ~150 MB self-contained file or a runtime download. The cost is C# 5 language level.
 
 ## Tests
@@ -330,7 +348,10 @@ Timing-dependent checks wait for the outcome rather than sleeping a fixed guess,
 machine does not turn into a red tick.
 
 The rest move real screen brightness or drive the window, so they are kept separate. Each puts
-your displays back if anything goes wrong.
+your displays back if anything goes wrong, seeds the settings it needs and then restores the
+settings file you had, and wakes the screen before it starts — a check that runs while Windows
+has the screen switched off measures the power state rather than the application, and reports a
+confident failure that has nothing to do with Dimly.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools/functest.ps1    # Dim now, measured over DDC/CI
@@ -348,8 +369,8 @@ powershell -ExecutionPolicy Bypass -File tools/restore.ps1     # safety net: all
 
 `soak.ps1` is the one that matters for something meant to sit in the tray for weeks: an app
 that paints itself creates fonts, pens and brushes on every repaint and has to give all of them
-back. Over twelve dim-and-restore cycles, GDI objects stayed flat at 51, USER objects moved by
-one and handles by four.
+back. Over twenty-five dim-and-restore cycles with the window left open, GDI objects stayed
+flat at 51, USER objects moved by one and handles by four.
 
 Each of these refuses to invent a result. The ones that wait for the machine to go idle report
 SKIP rather than a green tick when something is injecting input; the ones that dim a display
@@ -359,8 +380,13 @@ Diagnostics rather than tests: `tools/whynot.ps1` shows every input the decision
 `tools/inputspy.cs` counts raw input events to work out what is resetting the idle clock
 (injected by software, a jittering mouse, or nothing at all - which means a HID device is doing
 it), `tools/restoreprobe.cs` traces a dim and restore through a display power cycle, and
-`tools/waketrace.ps1` switches the screen off and watches what Windows tells the app and what a
-monitor handle held across the power-off will claim afterwards. That last one is how the
+`tools/screenlog.ps1` (or `screenlog.cmd`, which is double-clickable) records everything around
+the screens while you are away - every power notification Windows sends, what your power plan is
+set to, and what each monitor reports through a handle held across the power-off against one
+taken fresh - and writes it to your Desktop for reading afterwards. It only watches: it changes
+no brightness and produces no input. `tools/waketrace.ps1` switches the screen off and watches
+what Windows tells the app and what a monitor handle held across the power-off will claim
+afterwards. That last one is how the
 stuck-dim bug was found, and it reports honestly when the screen came back on by itself instead
 of drawing a conclusion from a power-off that never happened.
 
@@ -419,8 +445,24 @@ Check which of the two things happened. "Windows protected your PC" is SmartScre
 only that the file is not well known yet — see [above](#windows-says-it-does-not-recognise-this-app).
 An actual quarantine with a threat name is a false positive worth
 [reporting to Microsoft](https://www.microsoft.com/en-us/wdsi/filesubmission); it costs nothing
-and is usually fixed quickly. Either way you can build the executable yourself in one command
-and compare the SHA-256.
+and is usually fixed quickly. Either way you can read every line of the source and build the
+executable yourself in one command — see [Verifying a build](#verifying-a-build).
+
+## Verifying a build
+
+```powershell
+Get-FileHash .\Dimly.exe -Algorithm SHA256
+```
+
+Compare that against the hash published with the release. If they match, the file you have is
+the file that was published — which is what you want to know after downloading it.
+
+**Building it yourself will not produce that same hash**, and that is not a warning sign. The
+C# 5 compiler that ships with .NET Framework has no deterministic-build option, so every build
+gets a fresh timestamp in the PE header and a fresh module GUID in the metadata. Two builds of
+byte-identical source differ in 46 bytes out of 198,144 — the stamps, and nothing else. What
+building from source gives you is an executable you watched being made from code you can read;
+it does not give you a hash to compare, and no honest claim can be made that it does.
 
 **Where are my settings?**
 `%AppData%\Dimly\settings.ini`, a plain text file you can read, edit or delete.

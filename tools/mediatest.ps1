@@ -77,6 +77,10 @@ public static class Media {
 $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'dist\Dimly.exe'
 $settings = Join-Path $env:APPDATA 'Dimly\settings.ini'
+
+. (Join-Path $PSScriptRoot 'common.ps1')
+Protect-DimlySettings
+Wake-Screen
 $wav = Join-Path $env:TEMP 'dimly-tone.wav'
 
 # A faint tone, loud enough to clear the silence threshold and quiet enough not to be a nuisance.
@@ -224,6 +228,6 @@ finally {
         Write-Host "Restoring brightness to $baseline% ..." -ForegroundColor Yellow
         [Media]::Write($baseline)
     }
-    if (Test-Path $settings) { Remove-Item $settings }
+    Restore-DimlySettings
     if (Test-Path $wav) { Remove-Item $wav }
 }

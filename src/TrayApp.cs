@@ -14,6 +14,12 @@ namespace Dimly
     public sealed class TrayApp : ApplicationContext
     {
         private readonly AppSettings _settings;
+        /// <summary>Whether Windows currently has the screen switched on.</summary>
+        private bool _screenOn = true;
+
+        /// <summary>A display change arrived while the screen was dark, and still needs acting on.</summary>
+        private bool _displaysChangedWhileOff;
+
         /// <summary>The name a second copy of Dimly looks for to reach this one.</summary>
         internal static string MessageWindowTitle { get { return MessageWindow.Title; } }
 
@@ -77,13 +83,22 @@ namespace Dimly
             // machines. Do it off the UI thread so the tray icon appears immediately.
             Task.Factory.StartNew(delegate
             {
-                _displays.Refresh();
-                _messages.BeginInvoke(new MethodInvoker(delegate
+                // Whatever the hardware does here, the engine has to start. A display that
+                // throws on the way in would otherwise leave Dimly running, in the tray, with
+                // its clock stopped - and nothing at all to say why it never dims.
+                try { _displays.Refresh(); }
+                catch (Exception) { }
+
+                try
                 {
-                    _engine.Start();
-                    RefreshTray();
-                    if (_window == null) Native.TrimMemory();
-                }));
+                    _messages.BeginInvoke(new MethodInvoker(delegate
+                    {
+                        _engine.Start();
+                        RefreshTray();
+                        if (_window == null) Native.TrimMemory();
+                    }));
+                }
+                catch (Exception) { }   // quit before enumeration finished; there is nothing to start
             });
 
             if (!startHidden) OpenWindow();
@@ -158,7 +173,21 @@ namespace Dimly
 
         private void OnDisplaySettingsChanged(object sender, EventArgs e)
         {
+            // Windows announces display changes on the way into a power-off as well as on the
+            // way out - four of them around a single screen timeout. Rebuilding then is the
+            // worst possible moment: every monitor is asleep, none answers DDC/CI, and each one
+            // is written off as uncontrollable and covered with an overlay instead. Whatever
+            // changed is still true when the screen comes back, and it is looked at then.
+            if (!_screenOn) { _displaysChangedWhileOff = true; return; }
+
             _engine.ReloadDisplays();
+        }
+
+        /// <summary>Windows has switched the screen off. Nothing is asked of a dark monitor.</summary>
+        private void OnDisplayPowerOff()
+        {
+            _screenOn = false;
+            _engine.SetScreenOn(false);
         }
 
         /// <summary>
@@ -167,6 +196,24 @@ namespace Dimly
         /// </summary>
         private void OnDisplayPowerOn()
         {
+            _screenOn = true;
+            _engine.SetScreenOn(true);
+
+            // Smart restore looks the displays over before handing the brightness back, which
+            // covers anything that changed while the screen was dark. Without it, a change that
+            // was held back until now still has to be acted on.
+            if (_settings.SmartRestore)
+            {
+                _displaysChangedWhileOff = false;
+                _engine.SmartRestore();
+                return;
+            }
+
+            if (_displaysChangedWhileOff)
+            {
+                _displaysChangedWhileOff = false;
+                _engine.ReloadDisplays();
+            }
             _engine.OnDisplayPowerOn();
         }
 
@@ -284,11 +331,14 @@ namespace Dimly
 
                 if (setting.PowerSetting != Native.GUID_CONSOLE_DISPLAY_STATE) return;
 
-                bool on = setting.Data != 0;
+                // Only "on" is on. Windows reports 2 while it dims the screen on the way to
+                // switching it off, and the monitors stop accepting commands from that moment.
+                bool on = setting.Data == 1;
                 bool wasOn = _displayWasOn;
                 _displayWasOn = on;
 
                 if (on && !wasOn) _owner.OnDisplayPowerOn();
+                else if (!on && wasOn) _owner.OnDisplayPowerOff();
             }
 
             protected override void Dispose(bool disposing)

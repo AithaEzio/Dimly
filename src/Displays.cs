@@ -28,10 +28,10 @@ namespace Dimly
         void Write(int percent);
 
         /// <summary>
-        /// Re-establishes whatever handle the display may have invalidated. Powering a monitor
-        /// off, or the machine sleeping, quietly kills the handles held across it.
+        /// Re-establishes whatever this backend holds. <paramref name="screen"/> is the display
+        /// as Windows has just enumerated it, or IntPtr.Zero to keep the one already known.
         /// </summary>
-        void Reacquire();
+        void Reacquire(IntPtr screen);
     }
 
     // ---------------------------------------------------------------- backends
@@ -112,7 +112,7 @@ namespace Dimly
         }
 
         /// <summary>Drops the cached method object; the next write makes a fresh one.</summary>
-        public void Reacquire()
+        public void Reacquire(IntPtr screen)
         {
             if (_methods == null) return;
             _methods.Dispose();
@@ -121,7 +121,7 @@ namespace Dimly
 
         public void Dispose()
         {
-            Reacquire();
+            Reacquire(IntPtr.Zero);
         }
 
         /// <summary>
@@ -160,7 +160,7 @@ namespace Dimly
     /// <summary>External monitors that answer DDC/CI brightness commands.</summary>
     internal sealed class DdcBackend : IBrightnessBackend
     {
-        private readonly IntPtr _screen;
+        private IntPtr _screen;
         private uint _minimum;
         private uint _range;
         private IntPtr _handle;
@@ -242,9 +242,18 @@ namespace Dimly
         /// <summary>
         /// Asks the monitor for a new physical handle. The old one survives a display being
         /// powered off in name only: commands sent to it are accepted and ignored.
+        ///
+        /// The screen it is asked through matters as much as the handle itself. An HMONITOR is
+        /// only good until the display configuration changes, and switching every monitor off
+        /// and on again changes it - Windows sends WM_DISPLAYCHANGE twice on the way down and
+        /// twice on the way back. Asking through the one captured before all that fails for
+        /// good, which is how a monitor ends up unreachable until the displays are rescanned by
+        /// hand. So the caller passes the screen as Windows has just enumerated it.
         /// </summary>
-        public void Reacquire()
+        public void Reacquire(IntPtr screen)
         {
+            if (screen != IntPtr.Zero) _screen = screen;
+
             IntPtr stale = Interlocked.Exchange(ref _handle, IntPtr.Zero);
             if (stale != IntPtr.Zero) Native.DestroyPhysicalMonitor(stale);
 
@@ -258,12 +267,11 @@ namespace Dimly
             for (int i = 1; i < monitors.Length; i++)
                 Native.DestroyPhysicalMonitor(monitors[i].hPhysicalMonitor);
 
-            uint minimum = 0, current = 0, maximum = 0;
-            if (Native.GetMonitorBrightness(_handle, ref minimum, ref current, ref maximum) && maximum > minimum)
-            {
-                _minimum = minimum;
-                _range = maximum - minimum;
-            }
+            // The scale this monitor reports is not asked for again. It is the same monitor, so
+            // it is the same scale, and asking costs a full round trip over a slow serial link -
+            // on a path that runs every time the screen switches off. Whether the new handle is
+            // any good is settled by the write that follows, which is read back and retried
+            // until the display agrees; a question here would prove nothing that does not.
         }
 
         public void Dispose()
@@ -327,7 +335,7 @@ namespace Dimly
         }
 
         /// <summary>An overlay owns no handle that anything else can invalidate.</summary>
-        public void Reacquire()
+        public void Reacquire(IntPtr screen)
         {
         }
 
@@ -391,6 +399,7 @@ namespace Dimly
             Model = model;
             Bounds = bounds;
             IsPrimary = isPrimary;
+            ScreenOn = true;
             _backend = backend;
             _overlayFactory = overlayFactory;
         }
@@ -406,6 +415,12 @@ namespace Dimly
 
         /// <summary>True once hardware control failed and the overlay took over.</summary>
         public bool Degraded { get { return _degraded; } }
+
+        /// <summary>
+        /// Whether Windows currently has the screen switched on. A display being powered down
+        /// refuses everything, and refusals from a dark screen are not evidence about it.
+        /// </summary>
+        public bool ScreenOn { get; set; }
 
         /// <summary>Brightness recorded the moment we dimmed; null while the user is present.</summary>
         public int? Captured { get; set; }
@@ -440,7 +455,7 @@ namespace Dimly
             // giving up here used to strand a perfectly good monitor on the overlay for good.
             try
             {
-                _backend.Reacquire();
+                _backend.Reacquire(IntPtr.Zero);
                 _backend.Write(percent);
                 return;
             }
@@ -448,7 +463,13 @@ namespace Dimly
             {
                 // Monitors that advertise DDC/CI but reject writes are common enough that
                 // silently switching to the overlay is better than silently doing nothing.
-                if (_degraded || _overlayFactory == null) throw;
+                //
+                // But a monitor Windows has just powered down rejects everything, and that says
+                // nothing about what it can do awake. Giving up there condemns a working display
+                // to a black overlay for the rest of the session - which is exactly what happens
+                // around a screen timeout, as Windows dims and then switches off each monitor in
+                // turn. Refusals from a dark screen are not evidence.
+                if (_degraded || _overlayFactory == null || !ScreenOn) throw;
             }
 
             _degraded = true;
@@ -458,10 +479,14 @@ namespace Dimly
             _backend.Write(percent);
         }
 
-        /// <summary>Re-establishes the display's handle after a sleep or a power cycle.</summary>
-        public void Reacquire()
+        /// <summary>
+        /// Re-establishes the display's handle after a sleep or a power cycle. Pass the screen
+        /// as Windows has just enumerated it whenever that is known: the one from before a
+        /// power cycle is no longer valid, and asking through it fails permanently.
+        /// </summary>
+        public void Reacquire(IntPtr screen)
         {
-            try { _backend.Reacquire(); }
+            try { _backend.Reacquire(screen); }
             catch (Exception) { }
         }
 
@@ -482,7 +507,7 @@ namespace Dimly
             }
 
             if (Confirm(percent)) return true;
-            Reacquire();
+            Reacquire(IntPtr.Zero);
             return Confirm(percent);
         }
 
@@ -519,6 +544,124 @@ namespace Dimly
 
         /// <summary>The current displays. Replaced wholesale by <see cref="Refresh"/>.</summary>
         public IList<DisplayTarget> Targets { get { return _targets; } }
+
+        /// <summary>
+        /// Whether Windows has the screen switched on. Passed down to every display, because a
+        /// monitor that is powered down refuses everything and must not be judged on that.
+        /// </summary>
+        public bool ScreenOn
+        {
+            get { return _screenOn; }
+            set
+            {
+                _screenOn = value;
+                foreach (DisplayTarget target in _targets) target.ScreenOn = value;
+            }
+        }
+
+        private bool _screenOn = true;
+
+        /// <summary>Runs work on the thread that owns the overlay windows.</summary>
+        public void OnUiThread(MethodInvoker work)
+        {
+            if (_uiThread == null || _uiThread.IsDisposed || !_uiThread.IsHandleCreated) return;
+            try { _uiThread.BeginInvoke(work); }
+            catch (Exception) { }
+        }
+
+        /// <summary>
+        /// Re-establishes every display after the screen has been switched off and on. Handles
+        /// taken before the power-off are dead in all but name, so each is taken again.
+        ///
+        /// When the same displays are still attached nothing is torn down: the objects the rest
+        /// of the app is holding stay valid, and so does the level each display is waiting to be
+        /// put back to. That skips the WMI query, the DDC/CI probe of every monitor and the
+        /// rebuilding of the overlay windows - which is worth having on a path that runs every
+        /// single time the screen switches off. Anything else falls back to a full rebuild.
+        /// </summary>
+        /// <returns>True when the list of displays itself changed.</returns>
+        public bool Reacquire()
+        {
+            List<Screen> screens = EnumerateScreens();
+            if (!SameDisplays(screens))
+            {
+                Refresh();
+                return true;
+            }
+
+            foreach (DisplayTarget target in _targets)
+                target.Reacquire(ScreenFor(screens, target));
+            return false;
+        }
+
+        /// <summary>
+        /// Whether the displays now attached are the ones already known - same identities, same
+        /// places, same primary. Identity alone is not enough: a monitor that has been moved
+        /// needs its overlay rebuilt over the right part of the desktop.
+        /// </summary>
+        private bool SameDisplays(List<Screen> screens)
+        {
+            List<DisplayTarget> known = _targets;
+            if (screens.Count != known.Count || screens.Count == 0) return false;
+
+            foreach (Screen screen in screens)
+            {
+                string pnpKey, model;
+                Native.DescribeMonitor(screen.AdapterName, out pnpKey, out model);
+                string key = string.IsNullOrEmpty(pnpKey) ? screen.AdapterName : pnpKey;
+
+                bool found = false;
+                foreach (DisplayTarget target in known)
+                {
+                    if (!string.Equals(target.Key, key, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (target.Bounds != screen.Bounds || target.IsPrimary != screen.IsPrimary) return false;
+                    found = true;
+                    break;
+                }
+                if (!found) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Whether every display is answering yet. A monitor in power save answers nothing at
+        /// all, so this is the difference between the screen being on as Windows reports it and
+        /// on as the monitor sees it. Handles are taken again first: one from before the
+        /// power-off would answer for the monitor rather than from it.
+        ///
+        /// A display Dimly covers with an overlay has nothing to ask, and is always ready.
+        /// </summary>
+        public bool AllAnswering()
+        {
+            List<Screen> screens = EnumerateScreens();
+            foreach (DisplayTarget target in _targets)
+            {
+                target.Reacquire(ScreenFor(screens, target));
+
+                int level;
+                if (!target.TryRead(out level)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// The display as Windows has it now, or IntPtr.Zero if it is no longer there. Screens
+        /// are matched by identity rather than by position in the list: the order Windows
+        /// enumerates them in is not promised to survive a power cycle.
+        /// </summary>
+        private static IntPtr ScreenFor(List<Screen> screens, DisplayTarget target)
+        {
+            foreach (Screen screen in screens)
+            {
+                string pnpKey, model;
+                Native.DescribeMonitor(screen.AdapterName, out pnpKey, out model);
+                string key = string.IsNullOrEmpty(pnpKey) ? screen.AdapterName : pnpKey;
+
+                if (string.Equals(key, target.Key, StringComparison.OrdinalIgnoreCase))
+                    return screen.Handle;
+            }
+            return IntPtr.Zero;
+        }
 
         /// <summary>Rebuilds the display list. Talks to WMI and DDC/CI, so call it off the UI thread.</summary>
         public void Refresh()
@@ -559,7 +702,23 @@ namespace Dimly
                 return a.Bounds.Y.CompareTo(b.Bounds.Y);
             });
 
+            // A rebuild can happen while displays are dimmed - the screen coming back after a
+            // power-off is exactly such a moment - and the level each one is waiting to be put
+            // back to lives on the target being replaced. Carry it over, or the new target
+            // knows nothing and the screen is left dim.
+            foreach (DisplayTarget fresh in rebuilt) fresh.ScreenOn = _screenOn;
+
             List<DisplayTarget> previous = Interlocked.Exchange(ref _targets, rebuilt);
+            foreach (DisplayTarget fresh in rebuilt)
+                foreach (DisplayTarget old in previous)
+                {
+                    if (!string.Equals(fresh.Key, old.Key, StringComparison.OrdinalIgnoreCase)) continue;
+                    fresh.Captured = old.Captured;
+                    fresh.Applied = old.Applied;
+                    fresh.LastAwakeLevel = old.LastAwakeLevel;
+                    break;
+                }
+
             foreach (DisplayTarget target in previous) target.Dispose();
             foreach (WmiBacklight unused in panels) unused.Dispose();
         }

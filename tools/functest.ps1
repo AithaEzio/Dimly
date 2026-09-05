@@ -77,6 +77,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'dist\Dimly.exe'
 $settings = Join-Path $env:APPDATA 'Dimly\settings.ini'
 
+. (Join-Path $PSScriptRoot 'common.ps1')
+Protect-DimlySettings
+Wake-Screen
+
 if (-not [Ddc]::Open()) { throw 'No DDC/CI monitor to measure.' }
 $baseline = -1
 for ($try = 0; $try -lt 8 -and $baseline -lt 0; $try++) {
@@ -183,6 +187,6 @@ finally {
         Write-Host "Restoring brightness to $baseline% ..." -ForegroundColor Yellow
         [Ddc]::Write($baseline)
     }
-    if (Test-Path $settings) { Remove-Item $settings }
+    Restore-DimlySettings
     [Ddc]::Close()
 }

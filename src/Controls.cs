@@ -12,8 +12,6 @@ namespace Dimly
     /// </summary>
     public abstract class ThemedControl : Control
     {
-        private Color _backdrop = Color.Empty;
-
         protected ThemedControl()
         {
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
@@ -23,22 +21,23 @@ namespace Dimly
 
         protected static Theme T { get { return Theme.Current; } }
 
-        /// <summary>The colour immediately behind this control. Inherited from the parent when unset.</summary>
+        /// <summary>
+        /// The colour immediately behind this control, which is whatever it is sitting on. Every
+        /// control fills its own rectangle with this before painting, which is how transparency
+        /// is avoided entirely.
+        /// </summary>
         public virtual Color Backdrop
         {
-            get { return _backdrop.A != 0 ? _backdrop : InheritedBackdrop(); }
-            set { _backdrop = value; Invalidate(); }
+            get
+            {
+                ThemedControl parent = Parent as ThemedControl;
+                if (parent != null) return parent.ChildBackdrop;
+                return Parent != null ? Parent.BackColor : T.Window;
+            }
         }
 
         /// <summary>The colour children of this control sit on. Containers override it.</summary>
         protected virtual Color ChildBackdrop { get { return Backdrop; } }
-
-        private Color InheritedBackdrop()
-        {
-            ThemedControl parent = Parent as ThemedControl;
-            if (parent != null) return parent.ChildBackdrop;
-            return Parent != null ? Parent.BackColor : T.Window;
-        }
 
         protected override void OnPaintBackground(PaintEventArgs e)
         {
@@ -77,12 +76,8 @@ namespace Dimly
     /// <summary>A rounded surface that groups related settings.</summary>
     public sealed class Card : ThemedControl
     {
-        public Card()
-        {
-            Radius = 14;
-        }
+        private const float CornerRadius = 14f;
 
-        public double Radius { get; set; }
         public string Heading { get; set; }
 
         protected override Color ChildBackdrop { get { return T.Card; } }
@@ -93,7 +88,7 @@ namespace Dimly
             Ui.Quality(g);
 
             RectangleF bounds = new RectangleF(0, 0, Width - 1, Height - 1);
-            float radius = (float)Radius * Ui.Scale;
+            float radius = CornerRadius * Ui.Scale;
 
             Ui.FillRound(g, T.Card, bounds, radius);
             Ui.DrawRound(g, T.Border, 1f * Ui.Scale, bounds, radius);
@@ -368,12 +363,10 @@ namespace Dimly
             Commit();
         }
 
-        protected override void OnMouseWheel(MouseEventArgs e)
-        {
-            base.OnMouseWheel(e);
-            Value += Math.Sign(e.Delta);
-            Commit();
-        }
+        // The wheel is deliberately not handled. A slider that answers it changes brightness
+        // when all the user meant to do was scroll the page it sits on - and these pages do
+        // scroll. Leaving the message alone passes it to the panel behind, which scrolls.
+        // Arrow keys, Home and End still move the value for anyone working without a mouse.
 
         protected override void OnKeyDown(KeyEventArgs e)
         {
@@ -459,6 +452,9 @@ namespace Dimly
     {
         /// <summary>Short enough to stay usable on a long page, long enough to grab.</summary>
         private const int MinimumThumb = 28;
+
+        /// <summary>How far one notch of the wheel moves the page. Three lines, as Windows does.</summary>
+        private const int WheelDistance = 60;
 
         private int _total;
         private int _viewport;
@@ -555,6 +551,19 @@ namespace Dimly
         {
             base.OnMouseUp(e);
             _dragging = false;
+        }
+
+        /// <summary>
+        /// The wheel works over the bar itself, not only over the page. Windows delivers the
+        /// message to whatever the pointer is on, and the panel that does the scrolling is not
+        /// this control's parent - so ignoring it would leave the scrollbar as the one strip of
+        /// the window where scrolling quietly stops working.
+        /// </summary>
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            if (Hidden == 0 || e.Delta == 0) return;
+            MoveTo(_offset - e.Delta * Ui.Px(WheelDistance) / 120);
         }
 
         protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _hover = true; Invalidate(); }

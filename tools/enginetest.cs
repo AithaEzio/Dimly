@@ -16,8 +16,12 @@ namespace Dimly
         public static int Idle;
         public static bool Fullscreen;
 
+        /// <summary>How many times the working set has been handed back to Windows.</summary>
+        public static int Trims;
+
         public static int IdleMilliseconds() { return Idle; }
         public static bool IsFullscreenAppActive() { return Fullscreen; }
+        public static void TrimMemory() { Trims++; }
     }
 
     /// <summary>Stands in for the audio engine, so playback can be turned on and off at will.</summary>
@@ -51,6 +55,7 @@ namespace Dimly
             Key = key;
             Name = key;
             Hardware = startingBrightness;
+            ScreenOn = true;
         }
 
         public string Key { get; private set; }
@@ -61,6 +66,7 @@ namespace Dimly
         public int? Captured { get; set; }
         public int? Applied { get; set; }
         public int? LastAwakeLevel { get; set; }
+        public bool ScreenOn { get; set; }
 
         /// <summary>A value the display quietly refuses, to stand in for hardware that accepts
         /// a command and does nothing with it.</summary>
@@ -93,8 +99,77 @@ namespace Dimly
     {
         private readonly List<DisplayTarget> _targets = new List<DisplayTarget>();
         public IList<DisplayTarget> Targets { get { return _targets; } }
-        public void Add(DisplayTarget target) { _targets.Add(target); }
-        public void Refresh() { }
+        public void Add(DisplayTarget target) { _targets.Add(target); target.ScreenOn = _screenOn; }
+
+        private bool _screenOn = true;
+
+        /// <summary>Whether Windows has the screen on, handed down to every display.</summary>
+        public bool ScreenOn
+        {
+            get { return _screenOn; }
+            set
+            {
+                _screenOn = value;
+                foreach (DisplayTarget target in _targets) target.ScreenOn = value;
+            }
+        }
+        public void Refresh() { Refreshes++; }
+
+        public int Refreshes;
+        public int Reacquisitions;
+
+        /// <summary>How many times the displays have been asked whether they are awake.</summary>
+        public int Enquiries;
+
+        /// <summary>Stands in for a monitor in power save: silent until asked this many times.</summary>
+        public int AnswersAfter;
+
+        public bool AllAnswering()
+        {
+            Enquiries++;
+            return Enquiries > AnswersAfter;
+        }
+
+        /// <summary>How long a rescan pretends to take, so the hold can be observed.</summary>
+        public int RescanMilliseconds;
+
+        /// <summary>What a rescan reports: whether the list of displays itself changed.</summary>
+        public bool ListChanges;
+
+        public bool Reacquire()
+        {
+            Reacquisitions++;
+            if (RescanMilliseconds > 0) Thread.Sleep(RescanMilliseconds);
+            foreach (DisplayTarget target in _targets) target.Reacquire();
+            return ListChanges;
+        }
+
+        /// <summary>
+        /// Work the engine wants run on the thread that owns the windows. The test drives
+        /// everything from one thread, so it is queued and run by the next pump - which is what
+        /// BeginInvoke amounts to in the real app.
+        /// </summary>
+        public static readonly Queue<MethodInvoker> Pending = new Queue<MethodInvoker>();
+
+        public void OnUiThread(MethodInvoker work)
+        {
+            lock (Pending) Pending.Enqueue(work);
+        }
+
+        /// <summary>Runs whatever the engine handed over, on the caller's thread.</summary>
+        public static void DrainPending()
+        {
+            for (; ; )
+            {
+                MethodInvoker work;
+                lock (Pending)
+                {
+                    if (Pending.Count == 0) return;
+                    work = Pending.Dequeue();
+                }
+                work();
+            }
+        }
     }
 
     internal static class EngineTest
@@ -425,6 +500,110 @@ namespace Dimly
             Native.Idle = 0;
             Pump(2000);
 
+            // --- while Windows has the screen off, nothing is touched -----------------------
+            // A monitor being powered down refuses every command, and acting on those refusals
+            // is how a working display gets written off as broken and covered with an overlay.
+            Settle(engine, bright, 100);
+            Native.Idle = 0;
+            Pump(1200);
+
+            engine.SetScreenOn(false);
+            bright.Writes = 0;
+            Native.Idle = 9000;                    // away, so it would normally dim
+            Pump(2500);
+            Check("nothing is written while the screen is off", bright.Writes == 0);
+            Check("and the display was told the screen is off", !bright.ScreenOn);
+
+            engine.SetScreenOn(true);
+            Check("the display is told when the screen comes back", bright.ScreenOn);
+            Check("and dimming resumes once it is back",
+                WaitFor(delegate { return bright.Hardware == 25; }, 8000));
+            Native.Idle = 0;
+            Pump(2000);
+
+            // --- Smart restore: nothing is decided until the displays have been checked -----
+            // A monitor still powering up answers with values it will contradict a second
+            // later, so the dim is held through the check even though the user is already
+            // back, and the brightness comes back once rather than twice.
+            Settle(engine, bright, 100);
+            Native.Idle = 9000;
+            Pump(1800);
+            Check("dimmed before the screen switched off", bright.Hardware == 25);
+
+            displays.Reacquisitions = 0;
+            displays.Refreshes = 0;
+            displays.Enquiries = 0;
+            displays.AnswersAfter = 3;             // a monitor that takes its time waking up
+
+            engine.SmartRestore();
+            Native.Idle = 0;                       // back at the desk straight away
+            Pump(1200);
+            Check("nothing is even asked of a monitor while it settles", displays.Enquiries == 0);
+            Check("the screen is held dim while the displays wake up",
+                engine.AwaitingRescan && bright.Hardware == 25);
+
+            Check("and the brightness comes back once they answer",
+                WaitFor(delegate { return bright.Hardware == 100; }, 20000));
+            Check("it waited for them rather than writing into the dark",
+                displays.Enquiries > displays.AnswersAfter);
+            Check("the check ran once, and rebuilt nothing it did not have to",
+                displays.Reacquisitions == 1 && displays.Refreshes == 0);
+            Check("and it is no longer holding anything back", !engine.AwaitingRescan);
+
+            displays.AnswersAfter = 0;
+
+            // Something else asking the engine for work while the check is running cancels it.
+            // Windows announces a display change twice the instant the screen comes back, so
+            // this is not a corner case - it is what happens every time. A check cut short must
+            // still let the screen go: leaving the hold set stops every restore for good, and
+            // the screen stays dark with the app insisting it is still checking.
+            Settle(engine, bright, 100);
+            Native.Idle = 9000;
+            Pump(1800);
+            Check("dimmed before the check is interrupted", bright.Hardware == 25);
+
+            displays.AnswersAfter = 100;           // a monitor that never answers
+            engine.SmartRestore();
+            Pump(400);
+            Check("the check is holding the screen", engine.AwaitingRescan);
+
+            // Settings being saved asks the engine to re-apply, and that must not disturb a
+            // check in progress - nothing is written to a monitor that is still waking anyway.
+            engine.Reapply();
+            Pump(600);
+            Check("routine work does not interrupt the check", engine.AwaitingRescan);
+
+            // Something that really does take the displays cuts it short, and the hold must
+            // still be let go of: leaving it set stops every restore for good, and the screen
+            // stays dark with the app insisting it is still checking.
+            engine.OnResume();
+            Native.Idle = 0;                       // and the user is back
+            Check("a check cut short still lets go of the screen",
+                WaitFor(delegate { return !engine.AwaitingRescan; }, 8000));
+            Check("and the brightness comes back",
+                WaitFor(delegate { return bright.Hardware == 100; }, 8000));
+
+            displays.AnswersAfter = 0;
+
+            // The screen comes back at the dimmed level after the power-off, with Dimly awake
+            // and holding nothing: the check must still put right what it last set. This is the
+            // stuck-dim monitor, and Smart restore has to handle it as the plain path does.
+            Settle(engine, bright, 100);
+            bright.Hardware = 25;
+            engine.SmartRestore();
+            Check("a screen that comes back dim is put right by the check too",
+                WaitFor(delegate { return bright.Hardware == 100; }, 8000));
+
+            // Still dimmed when the check finishes? Then it stays dimmed.
+            Settle(engine, bright, 100);
+            Native.Idle = 9000;
+            Pump(1800);
+            engine.SmartRestore();
+            Pump(1500);
+            Check("a screen still left alone stays dimmed after the check", bright.Hardware == 25);
+            Native.Idle = 0;
+            Pump(2000);
+
             // --- auto restore: no reading at all, there and back ---------------------------
             // The display is never asked how bright it is. It goes to the away level and comes
             // back to the level chosen for it, which is the whole point of the setting.
@@ -469,6 +648,40 @@ namespace Dimly
 
             settings.DisplayFallbacks.Clear();
 
+            // --- the working set is handed back once nobody is at the desk -----------------
+            // A tray application holds on to pages it will not touch again until somebody comes
+            // back, and Windows reclaims those only under memory pressure - which is why the
+            // figure in Task Manager climbs all evening and stays climbed. They are given up
+            // once the user has actually gone, and never while they are sitting there.
+            Settle(engine, bright, 100);
+            Native.Idle = 0;
+            Pump(1200);
+
+            Native.Trims = 0;
+            Pump(2000);
+            Check("nothing is handed back while somebody is at the desk", Native.Trims == 0);
+
+            Native.Idle = 9000;
+            Pump(1800);
+            Check("dimmed, ready for the trim", engine.State == DimState.Dimmed);
+            Check("and nothing is handed back before the fade could have finished", Native.Trims == 0);
+
+            Pump(6000);
+            Check("the working set is handed back once the screen is dim", Native.Trims == 1);
+            Pump(3000);
+            Check("and handed back once, not on every tick", Native.Trims == 1);
+
+            Native.Idle = 0;
+            Pump(2000);
+
+            // The screen being switched off is the longest stretch of doing nothing there is:
+            // nothing is read, nothing is written, and nothing is decided until it comes back.
+            Native.Trims = 0;
+            engine.SetScreenOn(false);
+            Check("and handed back when Windows switches the screen off", Native.Trims == 1);
+            engine.SetScreenOn(true);
+            Pump(1500);
+
             Settle(engine, bright, 100);
             settings.RestoreFallback = 100;
             Native.Idle = 9000;
@@ -478,6 +691,24 @@ namespace Dimly
             Check("still dimmed before shutdown", engine.State == DimState.Dimmed);
             engine.ShutdownRestore();
             Check("shutdown restores even from an override", bright.Hardware == 100 && dim.Hardware == 20);
+
+            // ... including while a check is still in flight. There is no later to wait for on
+            // the way out: a check that has not finished holds every write back, so leaving it
+            // set would put the machine to sleep with the displays still dimmed.
+            engine.Start();
+            Settle(engine, bright, 100);
+            Native.Idle = 9000;
+            Pump(1800);
+            Check("dimmed before shutting down mid-check", bright.Hardware == 25);
+
+            displays.AnswersAfter = 100;           // a check that will not finish on its own
+            engine.SmartRestore();
+            Pump(400);
+            Check("a check is holding the screen at shutdown", engine.AwaitingRescan);
+
+            engine.ShutdownRestore();
+            Check("shutting down mid-check still hands the displays back", bright.Hardware == 100);
+            displays.AnswersAfter = 0;
 
             Console.WriteLine();
             Console.WriteLine(_failures == 0 ? "ALL CHECKS PASSED" : _failures + " CHECK(S) FAILED");
@@ -530,6 +761,7 @@ namespace Dimly
             {
                 if (condition()) return true;
                 Application.DoEvents();
+                DisplayManager.DrainPending();
                 Thread.Sleep(50);
             }
             return condition();
@@ -542,6 +774,7 @@ namespace Dimly
             while (Environment.TickCount < until)
             {
                 Application.DoEvents();
+                DisplayManager.DrainPending();
                 Thread.Sleep(15);
             }
         }

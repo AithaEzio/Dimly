@@ -35,9 +35,34 @@ namespace Dimly
         /// <summary>How often to offer a refused restore back to the display.</summary>
         private const int RestoreRetryMilliseconds = 2000;
 
+        /// <summary>
+        /// How long a monitor is left alone after Windows says the screen is on again. Windows
+        /// reports the state it has asked for, not the state the hardware has reached: a
+        /// monitor coming out of power save takes seconds to light up, and through those
+        /// seconds it answers nothing and keeps nothing it is told. Nothing is even asked of it
+        /// until this has passed.
+        /// </summary>
+        private const int DisplayWakeSettleMilliseconds = 3000;
+
+        /// <summary>How often to ask whether the displays are answering, once settled.</summary>
+        private const int DisplayWakePollMilliseconds = 400;
+
+        /// <summary>
+        /// The longest the screen is held dim waiting for a display to speak up. Past this the
+        /// restore goes ahead anyway: a screen left dark is worse than a write nobody confirmed,
+        /// and that write is read back, retried and watched over regardless.
+        /// </summary>
+        private const int DisplayWakeTimeoutMilliseconds = 15000;
+
         /// <summary>Ticks of silence to remember. One tick over the longest possible delay is
         /// enough for the countdown; capping it keeps the millisecond conversion in range.</summary>
         private const int MaxQuietTicks = AppSettings.MaxIdleSeconds + 1;
+
+        /// <summary>
+        /// How long after the screen dims before the working set is handed back. Longer than the
+        /// longest fade, so the pages the fade is running out of are not taken away mid-write.
+        /// </summary>
+        private const int TrimDelayMilliseconds = 5000;
 
         private readonly AppSettings _settings;
         private readonly DisplayManager _displays;
@@ -58,6 +83,24 @@ namespace Dimly
         /// until the user says otherwise. Unlike an away dim, moving the mouse does not undo it.</summary>
         private bool _overridden;
 
+        /// <summary>
+        /// True while the displays are being looked over after the screen came back on. Nothing
+        /// is decided and nothing is written until that finishes - the screen stays exactly
+        /// where it is, even once the user is back - because a monitor still powering up
+        /// answers with values that are worse than useless.
+        /// </summary>
+        private bool _awaitingRescan;
+
+        /// <summary>
+        /// Whether Windows has the screen switched on. It says so before it starts powering the
+        /// monitors down, and while they are going down or dark they refuse everything - so
+        /// nothing is written, nothing is read, and nothing is concluded until they are back.
+        /// </summary>
+        private bool _screenOn = true;
+
+        /// <summary>When the current check began, so one that never ends can be noticed.</summary>
+        private int _rescanStartedTick;
+
         /// <summary>Ticks since sound was last heard. Zero means playback is holding the
         /// countdown at the start line; it begins counting the moment playback stops.</summary>
         private int _quietTicks = MaxQuietTicks;
@@ -68,6 +111,10 @@ namespace Dimly
         /// retry off for as long as the machine stayed up.
         /// </summary>
         private int _nextRetryTick = Environment.TickCount;
+
+        /// <summary>A working-set trim is waiting for the dim to finish. See <see cref="TrimWhenIdle"/>.</summary>
+        private bool _trimPending;
+        private int _trimAtTick;
 
         public DimEngine(AppSettings settings, DisplayManager displays, MediaWatcher media, ActivityWatcher activity)
         {
@@ -84,6 +131,30 @@ namespace Dimly
         public event EventHandler Changed;
 
         public DimState State { get { return _state; } }
+
+        /// <summary>True while Smart restore is checking the displays over.</summary>
+        public bool AwaitingRescan { get { return _awaitingRescan; } }
+
+        /// <summary>
+        /// Windows has told us whether the screen is on. While it is not, Dimly leaves the
+        /// displays entirely alone: a monitor being powered down rejects every command, and
+        /// acting on those rejections is how a working display gets written off as broken.
+        /// </summary>
+        public void SetScreenOn(bool on)
+        {
+            if (_screenOn == on) return;
+
+            _screenOn = on;
+            _displays.ScreenOn = on;
+
+            // The screen going dark is the longest stretch of doing nothing there is: no reading,
+            // no writing, and nothing decided until it comes back. Give the pages up now rather
+            // than on the schedule below, which the dim may not have got round to yet.
+            if (!on) { _trimPending = false; Native.TrimMemory(); }
+        }
+
+        /// <summary>Raised when the displays have been looked at again and may have changed.</summary>
+        public event EventHandler DisplaysChanged;
 
         /// <summary>
         /// Dims on demand and holds there. Turning it off restores whatever brightness the
@@ -147,9 +218,47 @@ namespace Dimly
 
         private void OnTick(object sender, EventArgs e)
         {
+            ReleaseStuckRescan();
             UpdateQuiet();
             Evaluate();
             RetryUnfinishedRestore();
+            TrimWhenIdle();
+        }
+
+        /// <summary>
+        /// Hands the working set back to Windows once nobody is at the desk.
+        ///
+        /// Dimly spends nearly all of its life asleep between one-second ticks, holding on to
+        /// pages it touched on the way in and will not touch again until somebody comes back.
+        /// Windows only reclaims those under memory pressure, so left alone the figure in Task
+        /// Manager climbs and stays there. They are given up a few seconds after the screen
+        /// dims, which is the one moment nothing can be waiting on them - and they fault back
+        /// in, from memory, well inside the tens of milliseconds a single brightness write
+        /// already takes.
+        /// </summary>
+        private void TrimWhenIdle()
+        {
+            if (!_trimPending) return;
+            if (unchecked(Environment.TickCount - _trimAtTick) < 0) return;
+
+            _trimPending = false;
+            Native.TrimMemory();
+        }
+
+        /// <summary>
+        /// Lets go of a check that has outlived any honest reason to still be running. Holding
+        /// the screen dim is only ever meant to last seconds; if something has gone wrong the
+        /// screen must come back regardless, because a dark screen nobody can explain is worse
+        /// than a restore that arrives late.
+        /// </summary>
+        private void ReleaseStuckRescan()
+        {
+            if (!_awaitingRescan) return;
+
+            int spent = unchecked(Environment.TickCount - _rescanStartedTick);
+            if (spent < DisplayWakeSettleMilliseconds + DisplayWakeTimeoutMilliseconds + 5000) return;
+
+            FinishSmartRestore(false);
         }
 
         /// <summary>
@@ -159,6 +268,7 @@ namespace Dimly
         /// </summary>
         private void RetryUnfinishedRestore()
         {
+            if (!_screenOn) return;
             if (_state != DimState.Awake || _paused || _overridden) return;
             if (unchecked(Environment.TickCount - _nextRetryTick) < 0) return;
 
@@ -189,6 +299,12 @@ namespace Dimly
 
         private void Evaluate()
         {
+            // Smart restore is mid-check: hold everything exactly as it is, the dim included.
+            if (_awaitingRescan) return;
+
+            // The screen is off, or on its way off. Nothing decided, nothing written.
+            if (!_screenOn) return;
+
             // Pausing means "leave my screens alone", which outranks a forgotten manual dim.
             if (_paused) { _overridden = false; SetState(DimState.Awake); return; }
 
@@ -224,6 +340,11 @@ namespace Dimly
             if (_state == next) return;
             _state = next;
             Apply(false);
+
+            // Dimming means the user has gone; coming back means they have not.
+            _trimPending = next == DimState.Dimmed;
+            if (_trimPending) _trimAtTick = unchecked(Environment.TickCount + TrimDelayMilliseconds);
+
             RaiseChanged();
         }
 
@@ -239,32 +360,123 @@ namespace Dimly
             Intent intent = Snapshot();
             Enqueue(delegate(CancellationToken token)
             {
-                foreach (DisplayTarget target in intent.Targets) target.Reacquire();
+                // Through the manager, so every handle is re-taken against the screen as
+                // Windows has it now rather than as it was before the machine slept.
+                _displays.Reacquire();
+                intent.Targets = _displays.Targets;
+
                 if (!token.IsCancellationRequested) Transition(intent, token);
             });
         }
 
         /// <summary>
-        /// Windows switched the screen off on its own timeout and has just switched it back
-        /// on. This is not a sleep, so nothing else tells Dimly it happened.
-        ///
-        /// A physical monitor handle taken before the screen went dark does not fail
-        /// afterwards - it accepts commands, ignores them, and answers a read with the value
-        /// it was given. So the restore made the moment the user touches the mouse can be
-        /// confirmed, and let go of, while the panel is still powering up - and it comes back
-        /// at the dimmed level for good. Every handle is taken again here, and the level Dimly
-        /// last set is put back on the record, so the ordinary restore - written, read back,
-        /// retried and watched over - has to prove itself all over again.
+        /// Smart restore. The screen has just come back from being switched off, and rather
+        /// than trusting handles and readings that a powering-up monitor will happily give and
+        /// then contradict, the displays are looked over from scratch first. The dim is held
+        /// through it - the user may already be moving the mouse - and let go of only once the
+        /// check is done, so the brightness comes back once and correctly rather than twice.
         /// </summary>
+        public void SmartRestore()
+        {
+            if (_awaitingRescan) return;
+
+            _awaitingRescan = true;
+            _rescanStartedTick = Environment.TickCount;
+            RaiseChanged();
+
+            Enqueue(delegate(CancellationToken token)
+            {
+                bool listChanged = false;
+                try
+                {
+                    WaitForDisplaysToWake(token);
+                    if (!token.IsCancellationRequested) listChanged = _displays.Reacquire();
+                }
+                finally
+                {
+                    // Whatever happened - finished, cancelled, or thrown - the hold is let go
+                    // of. It stops the screen being restored, so a path that leaves it set is a
+                    // path that leaves the screen dark for good.
+                    _displays.OnUiThread(delegate { FinishSmartRestore(listChanged); });
+                }
+            });
+        }
+
+        /// <summary>
+        /// Waits for the monitors to come out of power save. They are left alone first - asking
+        /// a monitor that is still dark tells you only that it is still dark - and then asked,
+        /// gently, until they answer. Anything the user does meanwhile cancels this along with
+        /// the rest of the work, and a display that never answers is given up on rather than
+        /// left holding the screen dark.
+        /// </summary>
+        private void WaitForDisplaysToWake(CancellationToken token)
+        {
+            if (!Rest(DisplayWakeSettleMilliseconds, token)) return;
+
+            int deadline = unchecked(Environment.TickCount + DisplayWakeTimeoutMilliseconds);
+            while (unchecked(Environment.TickCount - deadline) < 0)
+            {
+                if (_displays.AllAnswering()) return;
+                if (!Rest(DisplayWakePollMilliseconds, token)) return;
+            }
+        }
+
+        /// <summary>Sleeps in slices, so that anything the user does is noticed at once.</summary>
+        private static bool Rest(int milliseconds, CancellationToken token)
+        {
+            for (int waited = 0; waited < milliseconds; waited += 100)
+            {
+                if (token.IsCancellationRequested) return false;
+                Thread.Sleep(100);
+            }
+            return !token.IsCancellationRequested;
+        }
+
+        private void FinishSmartRestore(bool listChanged)
+        {
+            if (!_awaitingRescan) return;
+            _awaitingRescan = false;
+
+            if (listChanged)
+            {
+                EventHandler handler = DisplaysChanged;
+                if (handler != null) handler(this, EventArgs.Empty);
+            }
+
+            // Whatever the user did while the check was running is decided now, and the level
+            // Dimly last set is put back on the record either way - the handles are new, and
+            // nothing has yet proved itself against the display as it is now.
+            Evaluate();
+            RestoreWhatWasSet(false);
+            RaiseChanged();
+        }
+
         public void OnDisplayPowerOn()
+        {
+            RestoreWhatWasSet(true);
+        }
+
+        /// <summary>
+        /// Puts the level Dimly last set back on the record, so the ordinary restore - written,
+        /// read back, retried and watched over - has to prove itself against the display as it
+        /// is now rather than as it was before the screen went dark. Handles are taken again
+        /// too, unless a check has just done that.
+        /// </summary>
+        private void RestoreWhatWasSet(bool takeHandlesAgain)
         {
             Intent intent = Snapshot();
             Enqueue(delegate(CancellationToken token)
             {
+                if (takeHandlesAgain)
+                {
+                    // Handles are re-taken against freshly enumerated screens, and a rebuild
+                    // may have replaced the targets outright, so the list is read again.
+                    _displays.Reacquire();
+                    intent.Targets = _displays.Targets;
+                }
+
                 foreach (DisplayTarget target in intent.Targets)
                 {
-                    target.Reacquire();
-
                     if (intent.Dim) continue;
                     if (target.Captured != null) continue;
                     if (!target.LastAwakeLevel.HasValue) continue;
@@ -349,6 +561,15 @@ namespace Dimly
         /// <summary>Re-enumerates displays after a hardware change, restoring the old set first.</summary>
         public void ReloadDisplays()
         {
+            // Re-probing while the monitors are dark finds nothing that answers, and every
+            // display would be written off as uncontrollable. It waits for the screen.
+            if (!_screenOn) return;
+
+            // Smart restore is already looking the displays over, and Windows announces a
+            // display change twice the moment the screen comes back. Rebuilding now would
+            // cancel that check part way through and leave the screen held dark.
+            if (_awaitingRescan) return;
+
             Intent before = Snapshot();
             before.Dim = false;
             before.Fade = false;
@@ -371,6 +592,11 @@ namespace Dimly
             _tick.Stop();
             _overridden = false;
             _state = DimState.Awake;
+
+            // A check in progress holds every write back, and on the way out there is no later
+            // to wait for: whatever it was going to conclude, the displays have to be handed
+            // back now or they are left dim with nothing running to put them right.
+            _awaitingRescan = false;
             Apply(true);
 
             Task pending;
@@ -442,15 +668,20 @@ namespace Dimly
 
         private void Apply(bool immediate)
         {
+            // Writing to a monitor that Windows is powering down achieves nothing and risks
+            // everything: the write fails, and a failure is how a display gets written off.
+            if (!_screenOn) return;
+
+            // Nor while the monitors are still waking. Windows calls the screen on seconds
+            // before they can accept anything, and a write in that gap fails for reasons that
+            // have nothing to do with the display.
+            if (_awaitingRescan) return;
+
             Intent intent = Snapshot();
             if (immediate) intent.Fade = false;
             Enqueue(delegate(CancellationToken token) { Transition(intent, token); });
         }
 
-        /// <summary>
-        /// Queues work on the single writer thread, cancelling whatever is in flight. A fade that
-        /// is half done simply stops where it is; the next transition starts from that value.
-        /// </summary>
         /// <summary>
         /// Queues work that must not disturb what is already running. Reading a level is not a
         /// change of intent, and cancelling on its behalf would abandon the very fade it was
@@ -493,6 +724,10 @@ namespace Dimly
             }
         }
 
+        /// <summary>
+        /// Queues work on the single writer thread, cancelling whatever is in flight. A fade that
+        /// is half done simply stops where it is; the next transition starts from that value.
+        /// </summary>
         private void Enqueue(Action<CancellationToken> work)
         {
             lock (_queueGate)

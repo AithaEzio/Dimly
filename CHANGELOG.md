@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1 — 3 September 2026
+## 1.1 — 4 September 2026
 
 > ### Please read before updating: Auto restore is new, and it is on
 >
@@ -45,6 +45,21 @@
     copy what is on screen into it.
   - A monitor Dimly cannot reach says so plainly, and one that will not report its level says
     that too rather than showing a made-up number.
+- **Smart restore**, on by default. When Windows switches the screen off on its own timeout,
+  the display that comes back is not the display that went away: handles taken beforehand are
+  dead, and a monitor still powering up answers with values it contradicts a second later.
+
+  Windows reports the screen as on the moment it asks for it, which is several seconds before
+  a monitor has actually left power save. So Smart restore waits: the monitors are left alone
+  to settle, then asked - gently, until they answer - and only then are the displays looked
+  over and the brightness handed back. The dim is held through all of it, even if you are
+  already moving the mouse, so the brightness returns once and correctly rather than being
+  written into a monitor that is still dark. A display that never answers is given up on after
+  fifteen seconds rather than left holding the screen dark.
+
+  It only ever runs after the screen has been switched off; every other wake follows the
+  ordinary path, switch on or not. The Displays page reports what Windows is actually set to
+  do, since a machine never set to switch the screen off will never see this run.
 - **A restore level per display**, replacing the single shared one — which is kept as the
   default for any display not given its own.
 - **Never dim while media is playing.** Dimly asks the Windows audio engine whether anything
@@ -62,7 +77,7 @@
 
 ### Changed
 
-- **Half the size of 1.0, despite everything above**: 374 KB to 187 KB. The icon was embedded
+- **Half the size of 1.0, despite everything above**: 374 KB to 194 KB. The icon was embedded
   twice — once as the Win32 resource Windows uses for the file, and again as a managed
   resource for the app to read — so Dimly now reads the Win32 copy it already carries. The
   large icon frames are also PNG-compressed, which halved the icon itself; a single 128px
@@ -72,10 +87,39 @@
   across the machine is the most heuristic-tripping thing a small unsigned utility can do.
   Dimly now has Windows post notifications to one private window, and only ever looks at which
   kind of device sent them — never at what was typed.
+- **Re-establishing the displays is around sixty times faster** - 62 ms down to under 1 ms per
+  pass on a single monitor, and it no longer grows with the number of them. Nearly all of that
+  was one question put to each monitor over DDC/CI: what scale do you use? It is the same
+  monitor, so it is the same scale, and the answer was already known. Whether the new handle
+  works is settled by the write that follows, which is read back and retried until the display
+  agrees - a question beforehand proved nothing that write does not. This matters because the
+  check now runs every single time the screen switches off.
+- **A rescan keeps the displays it already has** when the same monitors are still attached in
+  the same places. Nothing is torn down and rebuilt, so the overlay windows survive, every
+  per-display setting and captured level survives, and the Displays page is not redrawn under
+  the user. Plugging a monitor in or out still rebuilds everything, and the **Rescan** button
+  always does a full re-probe so a display that had gone quiet can be found again.
 - **The scrollbar is drawn in the theme.** Windows' own bar cannot be coloured, and one grey
   strip in a window where every other control is drawn by hand looked like a mistake. The panel
   behind it still does the scrolling - wheel, keyboard and touchpad all behave exactly as
   before - and its bar is simply kept out of sight.
+- **The mouse wheel no longer moves a slider.** Scrolling with the pointer over one changed
+  the brightness when all that was meant was to scroll the page - and these pages do scroll.
+  The wheel now reaches the page behind, as it should. Arrow keys, Home and End still move a
+  slider for anyone working without a mouse.
+- **Dimly hands its memory back to Windows once you have gone.** A tray application spends
+  nearly all of its life asleep, holding pages it touched on the way in and will not touch
+  again until somebody comes back — and Windows only reclaims those under memory pressure, so
+  the figure in Task Manager climbs all evening and stays climbed. They are now given up a few
+  seconds after the screen dims, and again the moment Windows switches the screen off: the two
+  moments when nothing can possibly be waiting on them. Measured over a ten-minute away
+  period, the working set holds around 1–3 MB instead of climbing past 30 MB, and the pages
+  come back from memory well inside the time a single brightness write already takes.
+- **The window only repaints when something has actually changed.** The status line was redrawn
+  once a second whether or not it still said the same thing — and "Paused", "Dimmed" and "Media
+  playing" sit still for minutes at a time. The live brightness readouts did the same on every
+  reading. Over twenty-five dim-and-restore cycles with the window open, that halved the memory
+  the app accumulates, with nothing different on screen.
 - Closing the window explains, once, that Dimly is still in the tray. Silently vanishing is
   the most common way a tray app loses a user.
 - Rescanning displays says that it is scanning, and a button that cannot be pressed now looks
@@ -84,6 +128,57 @@
 
 ### Fixed
 
+- **The scrollbar ignored the mouse wheel.** Scrolling with the pointer anywhere on the page
+  worked; scrolling with it over the scrollbar itself did nothing at all, because the panel
+  that does the scrolling is not the bar's parent and the message died there. The one strip of
+  the window a person is most likely to aim at is now the one it was least likely to work on.
+- **A window dragged off the edge of the desktop could not be brought back.** Dimly's window
+  has no title bar and is dragged by its own caption strip, so one pushed off-screen — or left
+  on a monitor that was later unplugged — was unreachable by any means Windows offers, and the
+  app looked as though it would no longer open. Opening it now puts a window with nothing left
+  to grab hold of back in the middle of the screen.
+- **Quitting or signing out during a display check left the screens dimmed.** A check in
+  progress holds every brightness write back, and on the way out there is no later to wait
+  for. The hold is now let go of before the final restore, so the displays are handed back
+  whatever the app was in the middle of.
+- **A display that failed on the way in could leave Dimly running with its clock stopped** —
+  in the tray, apparently fine, never dimming, and with nothing at all to say why. The first
+  scan of the hardware can no longer stop the engine from starting.
+- **A monitor that dropped a reading made the live brightness flicker.** Monitors answer over
+  a slow serial link and miss queries — one here answers about four times in ten — and the
+  Displays page blanked the reading to "not reported" on every single miss, then showed the
+  number again a second and a half later. The last thing a display said now stands until it
+  has gone properly quiet.
+- **Smart restore could hold the screen dark for the rest of the session.** Windows announces a
+  display change twice the instant the screen comes back on - and that announcement made Dimly
+  rebuild its display list, which cancelled the check that was in progress. The cancelled path
+  never let go of the hold it had placed on the screen, and that hold stops every decision the
+  app makes: the brightness never came back, the app said "Checking displays" forever, and
+  anything done afterwards - including **Rescan** - re-applied the stale dimmed state, which is
+  the brighten-then-dim loop. The hold is now released whatever happens to the check, routine
+  work no longer interrupts one, nothing is written to a monitor that is still waking, and a
+  check that somehow outlives its own timeout is let go of by the next tick.
+- **Both monitors were written off as uncontrollable by a single screen timeout.** Windows dims
+  every monitor and then switches it off, and through that a monitor accepts nothing. Dimly
+  read those refusals as "this display has no working brightness control", gave up on it, and
+  covered it with a black overlay for the rest of the session - so the screen came back dark
+  with the backlight sitting at full, and only **Rescan** undid it. Refusals from a screen
+  Windows is powering down are no longer treated as evidence about the display, and Dimly now
+  leaves the displays completely alone from the moment Windows says it is switching them off
+  until it says they are back.
+- **A monitor could be lost for good once the screen had been switched off and on.** Windows
+  announces a display change four times around a single screen timeout - twice on the way into
+  the power-off and twice on the way out - and every one of them invalidates the handle that
+  identifies a display. Dimly captured that handle once and asked through it forever after, so
+  from the first power cycle onward it could not read or write that monitor at all: the screen
+  came back at the away level and stayed there, restores failed silently, and only pressing
+  **Rescan** brought it back. Handles are now re-taken against the display as Windows has just
+  enumerated it.
+- **Rebuilding the display list while the screen was dark wrote every monitor off.** Those same
+  announcements arrive while the monitors are asleep, and a monitor asleep answers nothing - so
+  each was judged uncontrollable and covered with a black overlay instead. A change that
+  arrives while the screen is off is now acted on when it comes back, which is the first moment
+  the answer means anything.
 - **A screen switched off by Windows came back dim and stayed dim.** Not sleep — the display
   timeout, after which the only warning Dimly gets is a power notification it was not
   listening for. The monitor handle it holds survives the power-off in name only: it accepts

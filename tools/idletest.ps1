@@ -94,6 +94,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'dist\Dimly.exe'
 $settings = Join-Path $env:APPDATA 'Dimly\settings.ini'
 
+. (Join-Path $PSScriptRoot 'common.ps1')
+Protect-DimlySettings
+Wake-Screen
+
 if (-not [Idle]::Open()) { throw 'No DDC/CI monitor to measure.' }
 $baseline = [Idle]::Read()
 Write-Host "Baseline brightness: $baseline%"
@@ -185,11 +189,18 @@ try {
     $results['afterExit'] = ([Idle]::Read() -ge ($baseline - 3))
 
     Write-Host ''
+    $failures = 0
     foreach ($k in 'save', 'autoDim', 'restore', 'afterExit') {
-        $mark = if ($results[$k] -eq 'SKIP') { 'SKIP (machine never idle)' }
-                elseif ($results[$k]) { 'PASS' } else { 'FAIL' }
+        # -is [string] rather than -eq 'SKIP': with a boolean on the left, PowerShell casts the
+        # right-hand side to boolean, and any non-empty string is $true - so every passing check
+        # matched 'SKIP' and this could never once print PASS.
+        $mark = if ($results[$k] -is [string]) { 'SKIP (machine never idle)' }
+                elseif ($results[$k]) { 'PASS' } else { $failures++; 'FAIL' }
         Write-Host ("  {0,-10} {1}" -f $k, $mark)
     }
+    Write-Host ''
+    if ($failures -eq 0) { Write-Host 'ALL CHECKS PASSED' -ForegroundColor Green }
+    else { Write-Host "$failures CHECK(S) FAILED" -ForegroundColor Red }
 }
 finally {
     Get-Process -Name Dimly -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -199,4 +210,5 @@ finally {
         [Idle]::Write($baseline)
     }
     [Idle]::Close()
+    Restore-DimlySettings
 }

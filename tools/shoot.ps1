@@ -71,7 +71,12 @@ New-Item -ItemType Directory -Force -Path $preview | Out-Null
 Get-Process -Name Dimly -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 500
 
-# Screenshots should always show a fresh install, not whatever earlier runs left behind.
+# Screenshots should always show a fresh install, not whatever earlier runs left behind -
+# but those settings belong to whoever is taking them, so they are put back at the end.
+. (Join-Path $PSScriptRoot 'common.ps1')
+Protect-DimlySettings
+Wake-Screen
+trap { Restore-DimlySettings; break }   # put them back even if this stops early
 Remove-Item (Join-Path $env:APPDATA 'Dimly\settings.ini') -ErrorAction SilentlyContinue
 
 [Shot]::Nudge()
@@ -140,3 +145,5 @@ GoToPage 2; Capture "displays$suffix"
 GoToPage 3; Capture "appearance$suffix"
 
 Get-Process -Name Dimly -ErrorAction SilentlyContinue | Stop-Process -Force
+
+Restore-DimlySettings

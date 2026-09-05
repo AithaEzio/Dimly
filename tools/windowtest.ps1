@@ -45,6 +45,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'dist\Dimly.exe'
 $settings = Join-Path $env:APPDATA 'Dimly\settings.ini'
 
+. (Join-Path $PSScriptRoot 'common.ps1')
+Protect-DimlySettings
+Wake-Screen
+
 $failures = 0
 function Check([string]$what, [bool]$ok) {
     Write-Host ("  {0}  {1}" -f $(if ($ok) { 'pass' } else { 'FAIL' }), $what)
@@ -82,6 +86,7 @@ try {
     Get-Process -Name Dimly -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Milliseconds 500
 
+
     $app = Start-Process $exe -PassThru
     $window = WaitForWindow $app
     Check 'the window opens' ($window -ne [IntPtr]::Zero)
@@ -113,5 +118,5 @@ try {
 }
 finally {
     Get-Process -Name Dimly -ErrorAction SilentlyContinue | Stop-Process -Force
-    if (Test-Path $settings) { Remove-Item $settings }
+    Restore-DimlySettings
 }

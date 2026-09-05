@@ -37,6 +37,14 @@ namespace Dimly
         /// <summary>Fallback levels chosen per display, keyed by the display's stable id.</summary>
         public Dictionary<string, int> DisplayFallbacks { get; private set; }
 
+        /// <summary>
+        /// After Windows switches the screen off, look the displays over again before handing
+        /// the brightness back. A monitor that has been powered down can come back reporting
+        /// nothing useful, so the screen is held where it is - even once the user is back -
+        /// until the check finishes. On by default; it only ever runs after a power-off.
+        /// </summary>
+        public bool SmartRestore { get; set; }
+
         /// <summary>Whether the "it is still in the tray" hint has been shown. Once is enough.</summary>
         public bool TrayHintShown { get; set; }
         public bool StartHidden { get; set; }
@@ -62,6 +70,7 @@ namespace Dimly
             HoldWhileAudioPlays = true;
             IgnoreNoisyDevices = false;
             RestoreFallback = 100;
+            SmartRestore = true;
             TrayHintShown = false;
             StartHidden = false;
             ThemeId = "midnight";
@@ -169,6 +178,7 @@ namespace Dimly
                 case "HoldWhileAudioPlays": HoldWhileAudioPlays = ParseBool(value, HoldWhileAudioPlays); break;
                 case "IgnoreNoisyDevices": IgnoreNoisyDevices = ParseBool(value, IgnoreNoisyDevices); break;
                 case "RestoreFallback": RestoreFallback = ParseInt(value, RestoreFallback); break;
+                case "SmartRestore": SmartRestore = ParseBool(value, SmartRestore); break;
                 case "TrayHintShown": TrayHintShown = ParseBool(value, TrayHintShown); break;
                 case "StartHidden": StartHidden = ParseBool(value, StartHidden); break;
                 case "Theme": ThemeId = value; break;
@@ -222,6 +232,7 @@ namespace Dimly
                 Write(text, "HoldWhileAudioPlays", HoldWhileAudioPlays);
                 Write(text, "IgnoreNoisyDevices", IgnoreNoisyDevices);
                 Write(text, "RestoreFallback", RestoreFallback);
+                Write(text, "SmartRestore", SmartRestore);
                 Write(text, "TrayHintShown", TrayHintShown);
                 Write(text, "StartHidden", StartHidden);
                 text.AppendLine("Theme=" + ThemeId);

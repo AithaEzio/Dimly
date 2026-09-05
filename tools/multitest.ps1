@@ -138,6 +138,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'dist\Dimly.exe'
 $settings = Join-Path $env:APPDATA 'Dimly\settings.ini'
 
+. (Join-Path $PSScriptRoot 'common.ps1')
+Protect-DimlySettings
+Wake-Screen
+
 # The first DDC/CI query after a monitor has been idle often goes unanswered, so settle first.
 $baseline = @()
 for ($try = 0; $try -lt 8; $try++) {
@@ -258,5 +262,5 @@ finally {
         Write-Host 'Putting displays back...' -ForegroundColor Yellow
         [Multi]::WriteAll(100)
     }
-    if (Test-Path $settings) { Remove-Item $settings }
+    Restore-DimlySettings
 }

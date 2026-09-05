@@ -94,6 +94,10 @@ public static class Screen {
 $root = Split-Path -Parent $PSScriptRoot
 $exe = Join-Path $root 'dist\Dimly.exe'
 $settings = Join-Path $env:APPDATA 'Dimly\settings.ini'
+
+. (Join-Path $PSScriptRoot 'common.ps1')
+Protect-DimlySettings
+Wake-Screen
 $restoreLevel = 80
 
 $baseline = [Screen]::Read()
@@ -109,6 +113,25 @@ function Check([string]$what, [bool]$ok) {
 function WaitForLevel([int]$target, [int]$seconds) {
     for ($i = 0; $i -lt $seconds; $i++) {
         Start-Sleep -Seconds 1
+        $now = [Screen]::Read()
+        if ($now -ge 0 -and [Math]::Abs($now - $target) -le 5) { return $now }
+    }
+    return [Screen]::Read()
+}
+
+# The same wait, but with the machine kept in use.
+#
+# The idle delay here is five seconds, and a restore can legitimately take longer than that:
+# Smart restore leaves the monitors alone for three seconds to come out of power save before it
+# asks them anything. A wait that sits perfectly still therefore races Dimly's own countdown -
+# the brightness comes back, and is then quite correctly dimmed again a second later, and a
+# check polling once a second sees the dim rather than the restore. Nudging the mouse each time
+# round is what a person coming back to the desk actually does, and it is the only honest way to
+# ask "does the brightness come back when I return?"
+function WaitForLevelPresent([int]$target, [int]$seconds) {
+    for ($i = 0; $i -lt $seconds; $i++) {
+        [Screen]::Wiggle()
+        Start-Sleep -Milliseconds 900
         $now = [Screen]::Read()
         if ($now -ge 0 -and [Math]::Abs($now - $target) -le 5) { return $now }
     }
@@ -154,7 +177,7 @@ try {
     Check 'it dimmed' $true
 
     [Screen]::Wiggle()
-    $back = WaitForLevel $restoreLevel 12
+    $back = WaitForLevelPresent $restoreLevel 12
     Check 'it restored when the user came back' ([Math]::Abs($back - $restoreLevel) -le 5)
 
     # The restore is watched over for ten seconds. Wait that out, so what follows tests the
@@ -174,7 +197,7 @@ try {
     Start-Sleep -Seconds 4
     [Screen]::Wiggle()
 
-    $fixed = WaitForLevel $restoreLevel 20
+    $fixed = WaitForLevelPresent $restoreLevel 25
     Write-Host "  after the screen came back on: $fixed%"
     Check 'the display coming back on puts the brightness right' ([Math]::Abs($fixed - $restoreLevel) -le 5)
 
@@ -189,5 +212,5 @@ finally {
         Write-Host "Putting brightness back to $baseline% ..." -ForegroundColor Yellow
         [Screen]::Write($baseline)
     }
-    if (Test-Path $settings) { Remove-Item $settings }
+    Restore-DimlySettings
 }
